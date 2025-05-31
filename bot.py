@@ -1,747 +1,701 @@
-# taze_webhook.py
-import logging
+import telebot
+from telebot import types
 import json
 import os
-import asyncio
-from datetime import datetime
-from typing import Dict, Any
-from contextlib import asynccontextmanager # IMPORT THIS
+import logging
+import time
+import flask
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
+# Logging ayarları
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__) # __name__ KULLANILDI
 
-from fastapi import FastAPI, Request, Response, HTTPException
-import uvicorn
+# --- Yapılandırma ---
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or 'YOUR_TELEGRAM_BOT_TOKEN_HERE' # Token'ınızı buraya girin
+bot = telebot.TeleBot(TOKEN, parse_mode=None)
 
-# --- Logging Configuration ---
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# Webhook ayarları
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")
+WEBHOOK_PORT = int(os.environ.get('PORT', 8443))
+WEBHOOK_LISTEN = '0.0.0.0'
 
-# --- Environment Variables & Configuration ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN:
-    logger.error("BOT_TOKEN environment variable not set!")
-    exit(1)
+WEBHOOK_URL_PATH = f"/{TOKEN}/"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_URL_PATH}" if WEBHOOK_HOST else None
 
-ADMIN_ID_STR = os.environ.get("ADMIN_ID")
-if not ADMIN_ID_STR or not ADMIN_ID_STR.isdigit():
-    logger.error("ADMIN_ID environment variable not set or invalid!")
-    exit(1)
-ADMIN_ID = int(ADMIN_ID_STR)
+# Flask app instance
+app = flask.Flask(__name__) # __name__ KULLANILDI
 
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL") # e.g., https://your-app-name.onrender.com
-if not WEBHOOK_URL:
-    logger.error("WEBHOOK_URL environment variable not set!")
-    exit(1)
+# --- Sabitler ve Veri Dosyası ---
+SUPER_ADMIN_ID = 0 # KENDİ TELEGRAM ID'NİZİ GİRİN! (ÇOK ÖNEMLİ)
+DATA_FILE = 'channels.dat'
 
-SECRET_PATH = os.environ.get("SECRET_PATH", BOT_TOKEN)
-PORT = int(os.environ.get("PORT", 8080)) 
+# Callback data sabitleri (basitleştirilmiş)
+CB_SET_START_TEXT = "set_start_text"
+CB_SET_CHANNEL_ANNOUNCE_TEXT = "set_channel_announce_text"
+CB_VIEW_ADMINS = "view_admins"
+CB_VIEW_CHANNELS = "view_channels"
+CB_CREATE_SUPPORT_REQUEST = "create_support_request"
 
-USERS_FILE = "users.json"
-TEST_CODES_FILE = "test_codes.txt"
-PROMO_FILE = "promocodes.json"
+# --- Veri Yönetimi ---
+def load_data():
+    default_start_text = "👋 Hoş geldin {user_name}\\!\n\n📣 VPN KODUNU ALMAK İSTİYORSANIZ AŞAĞIDA GÖSTERİLEN SPONSOR KANALLARA ABONE OLUNUZ\\:"
+    default_channel_announce_text = (
+        "*🔥 PUBG İÇİN YARIP GEÇEN VPN KODU GELDİ\\! 🔥*\n\n"
+        "⚡️ *30 \\- 40 PING* veren efsane kod botumuzda sizleri bekliyor\\!\n\n"
+        "🚀 Hemen aşağıdaki butona tıklayarak veya [bota giderek](https://t.me/{bot_username}?start=pubgcode) kodu kapın\\!\n\n"
+        "✨ _Aktif ve değerli üyelerimiz için özel\\!_ ✨"
+    )
 
-# --- Global Variables & File Initialization ---
-active_orders: Dict[str, str] = {} 
-
-for file_path in [USERS_FILE, TEST_CODES_FILE, PROMO_FILE]:
-    if not os.path.exists(file_path):
-        with open(file_path, "w", encoding='utf-8') as f:
-            if file_path in [USERS_FILE, PROMO_FILE]:
-                json.dump({}, f)
-            elif file_path == TEST_CODES_FILE:
-                f.write("") 
-        logger.info(f"Created empty file: {file_path}")
-
-# --- Database Class (unchanged from your previous version) ---
-class Database:
-    @staticmethod
-    def _read_json_file(file_path: str) -> Dict[Any, Any]:
-        try:
-            with open(file_path, "r", encoding='utf-8') as f:
-                content = f.read()
-                if not content: 
-                    return {}
-                return json.loads(content)
-        except FileNotFoundError:
-            logger.warning(f"File not found: {file_path}, returning empty dict.")
-            return {}
-        except json.JSONDecodeError:
-            logger.error(f"Error decoding JSON from {file_path}, returning empty dict.")
-            return {} 
-
-    @staticmethod
-    def _write_json_file(file_path: str, data: Dict[Any, Any]):
-        try:
-            with open(file_path, "w", encoding='utf-8') as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"Error writing JSON to {file_path}: {e}")
-
-    @staticmethod
-    def read_db() -> Dict[Any, Any]:
-        return Database._read_json_file(USERS_FILE)
-
-    @staticmethod
-    def save_db(data: Dict[Any, Any]):
-        Database._write_json_file(USERS_FILE, data)
-
-    @staticmethod
-    def read_test_codes() -> str:
-        try:
-            with open(TEST_CODES_FILE, "r", encoding='utf-8') as f:
-                return f.read().strip()
-        except FileNotFoundError:
-            logger.warning(f"File not found: {TEST_CODES_FILE}, returning empty string.")
-            return ""
-        except Exception as e:
-            logger.error(f"Error reading test codes from {TEST_CODES_FILE}: {e}")
-            return ""
-
-
-    @staticmethod
-    def write_test_codes(code: str):
-        try:
-            with open(TEST_CODES_FILE, "w", encoding='utf-8') as f:
-                f.write(code)
-        except Exception as e:
-            logger.error(f"Error writing test codes to {TEST_CODES_FILE}: {e}")
-
-
-    @staticmethod
-    def read_promos() -> Dict[Any, Any]:
-        return Database._read_json_file(PROMO_FILE)
-
-    @staticmethod
-    def write_promos(promos: Dict[Any, Any]):
-        Database._write_json_file(PROMO_FILE, promos)
-
-# --- Telegram Bot Handlers (ensure they are async, content from your previous version) ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not user: return 
-    user_id = str(user.id)
-    users = Database.read_db()
-
-    if context.args and len(context.args) > 0 and context.args[0].isdigit():
-        referrer_id = context.args[0]
-        if referrer_id in users and user_id != referrer_id:
-            if 'referrals' not in users[referrer_id]:
-                users[referrer_id]['referrals'] = []
-            if user_id not in users[referrer_id].get('referrals', []):
-                users[referrer_id]['ref_count'] = users[referrer_id].get('ref_count', 0) + 1
-                users[referrer_id]['referrals'].append(user_id)
-                Database.save_db(users)
-                logger.info(f"User {user_id} referred by {referrer_id}")
-
-    if user_id not in users:
-        users[user_id] = {
-            "keys": [],
-            "ref_count": 0,
-            "referrals": [],
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not os.path.exists(DATA_FILE):
+        initial_data = {
+            "channels": [],
+            "success_message": "KOD: ",
+            "users": [],
+            "admins": [SUPER_ADMIN_ID] if SUPER_ADMIN_ID != 0 else [],
+            "start_message_text": default_start_text,
+            "channel_announcement_text": default_channel_announce_text,
+            "bot_operational_status": "active"
         }
-        Database.save_db(users)
-        logger.info(f"New user {user_id} ({user.full_name}) started the bot.")
-
-    if user.id == ADMIN_ID:
-        await show_admin_menu(update, context)
+        with open(DATA_FILE, 'w', encoding='utf-8') as file:
+            json.dump(initial_data, file, ensure_ascii=False, indent=4)
+        logger.info(f"{DATA_FILE} oluşturuldu.")
+        return initial_data
     else:
-        await show_main_menu(update, user)
-
-async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users = Database.read_db()
-    active_users_count = 0
-    if users: 
-        active_users_count = len([u for u in users.values() if u.get('keys')])
-    
-    total_refs = 0
-    if users: 
-        total_refs = sum(u.get('ref_count', 0) for u in users.values())
-
-
-    text = f"""🔧 Admin panel
-
-👥 Jemi ulanyjylar: {len(users) if users else 0}
-✅ Aktiw ulanyjylar: {active_users_count}
-🎁 Jemi referallar: {total_refs}"""
-
-    keyboard = [
-        [InlineKeyboardButton("📤 Test kody üýtget", callback_data="admin_change_test"), InlineKeyboardButton("📊 Statistika", callback_data="admin_stats")],
-        [InlineKeyboardButton("📩 Habar iber", callback_data="admin_broadcast"), InlineKeyboardButton("📦 Users bazasy", callback_data="admin_export")],
-        [InlineKeyboardButton("🎟 Promokod goş", callback_data="admin_add_promo_btn"), InlineKeyboardButton("🎟 Promokod poz", callback_data="admin_remove_promo_btn")], 
-        [InlineKeyboardButton("🔙 Baş sahypa", callback_data="main_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    if update.message:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    elif update.callback_query:
         try:
-            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-        except Exception as e: 
-            logger.warning(f"Error editing message for admin menu (might be identical): {e}")
-            await update.callback_query.answer("Menu is already up to date.") 
+            with open(DATA_FILE, 'r', encoding='utf-8') as file:
+                data = json.load(file)
+            if not isinstance(data, dict):
+                raise json.JSONDecodeError("Data is not a dictionary", "", 0)
 
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.callback_query: return
-    users = Database.read_db()
-    active_users_count = 0
-    if users:
-        active_users_count = len([u_id for u_id, u_data in users.items() if u_data.get('keys')])
-    
-    total_refs = 0
-    if users:
-        total_refs = sum(u_data.get('ref_count', 0) for u_data in users.values())
-
-
-    text = f"""📊 *Bot statistikasy* 👥 Jemi ulanyjylar: {len(users) if users else 0}
-✅ Aktiw ulanyjylar: {active_users_count}
-🎁 Jemi referallar: {total_refs}
-🕒 Soňky aktivlik: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
-
-    await update.callback_query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Yza", callback_data="admin_panel")]]),
-        parse_mode="Markdown"
-    )
-
-async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.callback_query or not update.callback_query.message : return
-    await update.callback_query.message.reply_text("📨 Ýaýlym habaryny iberiň (ähli ulanyjylara gider):")
-    context.user_data["broadcasting"] = True # type: ignore
-
-async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.callback_query or not update.callback_query.message : return
-    if os.path.exists(USERS_FILE) and os.path.getsize(USERS_FILE) > 0:
-        with open(USERS_FILE, "rb") as f:
-            await update.callback_query.message.reply_document(f)
-    else:
-        await update.callback_query.message.reply_text("❌ Ulanyjy bazasy boş ýa-da tapylmady.")
-
-async def admin_add_promo_btn(update: Update, context: ContextTypes.DEFAULT_TYPE): 
-    if not update.callback_query or not update.callback_query.message : return
-    await update.callback_query.message.reply_text("🎟 Täze promokod we skidkany ýazyň (mysal üçin: PROMO10 10):")
-    context.user_data["adding_promo"] = True # type: ignore
-
-async def admin_remove_promo_btn(update: Update, context: ContextTypes.DEFAULT_TYPE): 
-    if not update.callback_query or not update.callback_query.message : return
-    promos = Database.read_promos()
-    if not promos:
-        await update.callback_query.message.reply_text("❌ Promokodlar ýok!")
-        return
-
-    keyboard = [[InlineKeyboardButton(promo, callback_data=f"remove_{promo}")] for promo in promos.keys()]
-    keyboard.append([InlineKeyboardButton("🔙 Yza", callback_data="admin_panel")])
-    await update.callback_query.edit_message_text( 
-        "🎟 Pozmaly promokody saýlaň:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def admin_change_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.callback_query or not update.callback_query.message : return
-    await update.callback_query.message.reply_text("✏️ Täze test kody iberiň:")
-    context.user_data["waiting_for_test"] = True # type: ignore
-
-async def show_main_menu(update: Update, user_obj: Any): 
-    text = f"""Merhaba, {user_obj.full_name} 👋 
-
-🔑 Açarlarym - bassaňyz size mugt berilen ýa-da platny berilen kodlary ýatda saklap berer.
-🎁 Referal - bassaňyz size Referal (dostlarınız) çagyryp platny kod almak üçin mümkinçilik berer.
-🆓 Test Kody almak - bassaňyz siziň üçin Outline (ss://) kodyny berer.
-💰 VPN Bahalary - bassaňyz platny vpn'leri alyp bilersiňiz.
-🎟 Promokod - bassaňyz promokod ýazylýan ýer açylar.
-
-'Bildirim' - 'Уведомления' Açyk goýn, sebäbi Test kody tazelenende wagtynda bot arkaly size habar beriler."""
-
-    keyboard = [
-        [InlineKeyboardButton("🔑 Açarlarym", callback_data="my_keys")],
-        [InlineKeyboardButton("🎁 Referal", callback_data="referral"), InlineKeyboardButton("🆓 Test Kody Almak", callback_data="get_test")],
-        [InlineKeyboardButton("💰 VPN Bahalary", callback_data="vpn_prices"), InlineKeyboardButton("🎟 Promokod", callback_data="use_promo")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    if update.message:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    elif update.callback_query: 
-        try:
-            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-        except Exception as e:
-            logger.warning(f"Error editing message for main menu (might be identical): {e}")
-            await update.callback_query.answer()
-
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active_orders
-    query = update.callback_query
-    if not query or not query.from_user or not query.message: return
-    await query.answer()
-    data = query.data
-    user_id = str(query.from_user.id)
-    users = Database.read_db()
-
-    if data == "my_keys":
-        user_data = users.get(user_id, {})
-        keys = user_data.get("keys", [])
-        text = "Siziň açarlaryňyz:\n" + "\n".join(f"`{key}`" for key in keys) if keys else "Siziň açarlaryňyz ýok." 
-        await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Yza", callback_data="main_menu")]]), parse_mode="Markdown")
-
-    elif data == "referral":
-        ref_link = f"https://t.me/{context.bot.username}?start={user_id}"
-        ref_count = users.get(user_id, {}).get("ref_count", 0)
-        text = f"""Siz 5 adam çagyryp platny kod alyp bilersiňiz 🎁 
-
-Referal sylkaňyz: `{ref_link}`
-
-Referal sanyňyz: {ref_count}"""
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Yza", callback_data="main_menu")]]), parse_mode="Markdown")
-
-    elif data == "get_test":
-        test_kod = Database.read_test_codes()
-        await query.edit_message_text("Test Kodyňyz Ýasalýar...")
-        await asyncio.sleep(1) 
-        final_text = f"`{test_kod}`" if test_kod else "Häzirki wagtda test kody ýok."
-        await query.edit_message_text(final_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Yza", callback_data="main_menu")]]), parse_mode="Markdown")
-
-    elif data == "use_promo":
-        await query.edit_message_text("🎟 Promokody ýazyň:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Yza", callback_data="main_menu")]]))
-        context.user_data["waiting_for_promo"] = True # type: ignore
-
-    elif data == "vpn_prices":
-        base_prices = {"vpn_3": 20, "vpn_7": 40, "vpn_15": 100, "vpn_30": 150} 
-        discount = context.user_data.get("promo_discount", 0) if context.user_data else 0 # type: ignore
-        
-        prices_text = (
-            "**Eger platny kod almakçy bolsaňyz aşakdaky knopka basyň we BOT arkaly admin'iň size ýazmagyna garaşyn📍**\n"
-            "-----------------------------------------------\n"
-            "🌍 **VPN adı: Shadowsocks**🛍️\n"
-            "-----------------------------------------------\n"
-        )
-        if discount > 0:
-            prices_text += f"🎉 **Siziň {discount}% promokod skidkaňyz bar!** 🎉\n\n"
-
-        price_lines = []
-        for key, price in base_prices.items():
-            days_map = {"vpn_3": "3 Gün'lik", "vpn_7": "Hepdelik (7 gün)", "vpn_15": "15 Gün'lik", "vpn_30": "Aýlyk (30 gün)"}
-            day_text = days_map.get(key, f"{key.split('_')[1]} Gün'lik") 
+            updated = False
+            # Temel anahtarlar
+            for key, default_value in [
+                ("channels", []), ("success_message", "KOD: "), ("users", []),
+                ("admins", [SUPER_ADMIN_ID] if SUPER_ADMIN_ID != 0 else []),
+                ("start_message_text", default_start_text),
+                ("channel_announcement_text", default_channel_announce_text),
+                ("bot_operational_status", "active")
+            ]:
+                if key not in data:
+                    data[key] = default_value
+                    updated = True
             
-            original_price_str = f"{price} тмт"
-            if discount > 0:
-                discounted_price = price * (1 - discount / 100)
-                price_lines.append(f"🕯️ {day_text}: ~{original_price_str}~ **{discounted_price:.0f} тмт**")
-            else:
-                price_lines.append(f"🕯️ {day_text}: {original_price_str}")
-        
-        prices_text += "\n".join(price_lines)
+            # Admin listesinde SUPER_ADMIN_ID kontrolü
+            if SUPER_ADMIN_ID != 0 and SUPER_ADMIN_ID not in data.get("admins", []):
+                 data.setdefault("admins", []).append(SUPER_ADMIN_ID)
+                 updated = True
+            
+            # Eski resimle ilgili anahtarları kaldır (isteğe bağlı temizlik)
+            for old_key in ["start_message_type", "start_message_image_id", 
+                            "channel_announcement_type", "channel_announcement_image_id"]:
+                if old_key in data:
+                    del data[old_key]
+                    updated = True
 
-        keyboard_layout = []
-        row = []
-        for key, price in base_prices.items():
-            final_price = price * (1 - discount / 100) if discount > 0 else price
-            button_text = f"📅 {key.split('_')[1]} gün - {final_price:.0f} 𝚃𝙼𝚃"
-            button = InlineKeyboardButton(button_text, callback_data=f"order_{key.split('_')[1]}_{final_price:.0f}")
-            row.append(button)
-            if len(row) == 2:
-                keyboard_layout.append(row)
-                row = []
-        if row: 
-            keyboard_layout.append(row)
-        keyboard_layout.append([InlineKeyboardButton("🔙 Yza", callback_data="main_menu")])
-        
-        await query.edit_message_text(
-            text=prices_text,
-            reply_markup=InlineKeyboardMarkup(keyboard_layout),
-            parse_mode="Markdown"
-        )
-
-    elif data.startswith("order_"): 
-        parts = data.split("_")
-        days = parts[1]
-        price_ordered = parts[2] 
-        user = query.from_user
-        
-        order_message_text = f"✅ Siz {days} günlük VPN ({price_ordered} TMT) üçin sargyt etdiňiz."
-        await context.bot.send_message(chat_id=user.id, text=order_message_text)
-        await asyncio.sleep(0.5)
-        await context.bot.send_message(chat_id=user.id, text="⏳ Tiz wagtdan admin size ýazar. Admin bilen şu çatda habarlaşyp bilersiňiz.")
-        await asyncio.sleep(0.5)
-        
-        admin_text = f"🆕 Täze sargyt:\n👤 Ulanyjy: {user.full_name} (@{user.username} - `{user.id}`)\n📆 Sargyt: {days} günlük ({price_ordered} TMT)"
-        keyboard = [[InlineKeyboardButton("✅ Kabul et & Çat başla", callback_data=f"accept_{user.id}_{days}")]]
-        await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        await query.answer("Sargydyňyz admine ýetirildi.")
+            if updated:
+                save_data(data) 
+            return data
+        except json.JSONDecodeError as e:
+            logger.error(f"{DATA_FILE} bozuk. Yeniden oluşturuluyor. Hata: {e}")
+            # ... (önceki yedekleme ve yeniden oluşturma mantığı aynı kalabilir) ...
+            initial_data_on_error = {
+                "channels": [], "success_message": "KOD: ", "users": [], 
+                "admins": [SUPER_ADMIN_ID] if SUPER_ADMIN_ID != 0 else [],
+                "start_message_text": default_start_text,
+                "channel_announcement_text": default_channel_announce_text,
+                "bot_operational_status": "active"
+            }
+            with open(DATA_FILE, 'w', encoding='utf-8') as file:
+                json.dump(initial_data_on_error, file, ensure_ascii=False, indent=4)
+            return initial_data_on_error
+        except Exception as e: # Diğer tüm hatalar
+            logger.error(f"{DATA_FILE} yüklenirken beklenmedik genel hata: {e}")
+            # En kötü durumda varsayılan bir yapı döndür
+            return {"channels": [], "success_message": "KOD: ", "users": [], 
+                    "admins": [SUPER_ADMIN_ID] if SUPER_ADMIN_ID != 0 else [],
+                    "start_message_text": default_start_text, 
+                    "channel_announcement_text": default_channel_announce_text,
+                    "bot_operational_status": "active"}
 
 
-    elif data.startswith("accept_"):
-        _, target_id_str, days = data.split("_")
-        target_id = int(target_id_str)
-        
-        active_orders[str(target_id)] = str(ADMIN_ID)
-        active_orders[str(ADMIN_ID)] = str(target_id)
+def save_data(data):
+    try:
+        with open(DATA_FILE, 'w', encoding='utf-8') as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        logger.info(f"Veri {DATA_FILE} dosyasına kaydedildi.")
+    except Exception as e:
+        logger.error(f"{DATA_FILE} dosyasına kaydederken hata: {e}")
 
-        keyboard = [[InlineKeyboardButton("🚫 Sargydy/Çaty ýapmak", callback_data=f"close_{target_id}")]]
-        await query.edit_message_text( 
-            text=f"✅ Sargyt kabul edildi! Indi ulanyjy ({target_id}) bilen şu çatda ýazyşyp bilersiňiz.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        await context.bot.send_message(
-            chat_id=target_id,
-            text="✅ Sargydyňyz kabul edildi! Indi admin bilen şu ýerde habarlaşyp bilersiňiz."
-        )
+def add_user_if_not_exists(user_id):
+    data = load_data()
+    if user_id not in data.get("users", []):
+        data.setdefault("users", []).append(user_id) # setdefault daha güvenli
+        save_data(data)
+        logger.info(f"Yeni kullanıcı eklendi: {user_id}")
 
-    elif data.startswith("close_"):
-        target_id_str = data.split("_")[1]
-        admin_id_str = str(query.from_user.id) 
+def escape_markdown_v2(text):
+    if not isinstance(text, str):
+        text = str(text)
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return ''.join([f'\\{char}' if char in escape_chars else char for char in text])
 
-        closed_for_user = False
-        if target_id_str in active_orders and active_orders[target_id_str] == admin_id_str:
-            del active_orders[target_id_str]
-            closed_for_user = True
-        
-        closed_for_admin = False
-        if admin_id_str in active_orders and active_orders[admin_id_str] == target_id_str:
-            del active_orders[admin_id_str]
-            closed_for_admin = True
+# --- Güvenli Mesaj Gönderme Yardımcısı (Basitleştirilmiş) ---
+def send_with_markdown_v2_fallback(bot_method, chat_id_or_message, text_content, reply_markup=None):
+    """MarkdownV2 ile göndermeyi dener, ayrıştırma hatasında düz metin olarak veya Markdown'sız dener."""
+    chat_id = chat_id_or_message.chat.id if hasattr(chat_id_or_message, 'chat') else chat_id_or_message
+    is_reply = hasattr(chat_id_or_message, 'message_id') and bot_method == bot.reply_to
 
-        if closed_for_user or closed_for_admin:
-            await query.edit_message_text("✅ Çat ýapyldy!")
+    args = [chat_id_or_message if is_reply else chat_id, text_content]
+    kwargs_md = {"reply_markup": reply_markup, "parse_mode": "MarkdownV2"}
+    kwargs_plain = {"reply_markup": reply_markup}
+
+    try:
+        bot_method(*args, **kwargs_md)
+        return True
+    except telebot.apihelper.ApiTelegramException as e:
+        markdown_errors = ["can't parse entities", "unclosed token", "can't find end of the entity", "expected an entity after `[`", "wrong string"]
+        if any(err_str in str(e).lower() for err_str in markdown_errors):
+            logger.warning(f"MarkdownV2 ayrıştırma hatası (chat {chat_id}): {e}. Düz metin/Markdown'sız deneniyor.")
             try:
-                await context.bot.send_message(chat_id=int(target_id_str), text="🔒 Admin bilen çat ýapyldy. Täze sargyt edip bilersiňiz.")
-            except Exception as e:
-                logger.error(f"Could not notify user {target_id_str} about chat closure: {e}")
-        else:
-            await query.answer("❌ Bu çat eýýäm ýapyk ýa-da degişli däl.", show_alert=True)
-
-
-    elif data.startswith("remove_"): 
-        promo_to_remove = data.split("_", 1)[1]
-        promos = Database.read_promos()
-        if promo_to_remove in promos:
-            del promos[promo_to_remove]
-            Database.write_promos(promos)
-            await query.answer(f"✅ Promokod {promo_to_remove} pozuldy!", show_alert=True)
-            await admin_remove_promo_btn(update, context) 
-        else:
-            await query.answer("❌ Promokod tapylmady!", show_alert=True)
-
-    elif data == "admin_panel":
-        await show_admin_menu(update, context)
-    elif data == "main_menu":
-        if query.from_user.id == ADMIN_ID:
-            await show_admin_menu(update, context) 
-        else:
-            await show_main_menu(update, query.from_user)
-
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active_orders
-    user = update.effective_user
-    if not user or not update.message: return
-
-    text = update.message.text.strip() if update.message.text else ""
-    photo = update.message.photo[-1] if update.message.photo else None
-    user_id_str = str(user.id)
-
-    if context.user_data:
-        if context.user_data.get("waiting_for_test") and user.id == ADMIN_ID:
-            Database.write_test_codes(text)
-            await update.message.reply_text(f"✅ Täze test kody bellendi:\n`{text}`", parse_mode="Markdown")
-            del context.user_data["waiting_for_test"]
-            await show_admin_menu(update, context) 
-            return
-
-        if context.user_data.get("broadcasting") and user.id == ADMIN_ID:
-            del context.user_data["broadcasting"]
-            users_db = Database.read_db()
-            if not users_db:
-                await update.message.reply_text("❌ Ulanyjy ýok, habar iberilmedi.")
-                return
-
-            sent_count = 0
-            failed_count = 0
-            await update.message.reply_text(f"📢 {len(users_db)} ulanyja habar ýaýlymy başlandy...")
-            for uid_to_broadcast in users_db.keys():
+                # Önce escape edilmiş MarkdownV2 ile deneyelim
+                escaped_text = escape_markdown_v2(text_content)
+                args_escaped = [chat_id_or_message if is_reply else chat_id, escaped_text]
+                bot_method(*args_escaped, **kwargs_md)
+                return True
+            except telebot.apihelper.ApiTelegramException as e2:
+                logger.warning(f"Escaped MarkdownV2 ile gönderme de başarısız oldu (chat {chat_id}): {e2}. Parse_mode olmadan deneniyor.")
                 try:
-                    await context.bot.send_message(chat_id=int(uid_to_broadcast), text=f"📣 Täze habar:\n\n{text}")
-                    sent_count += 1
-                    await asyncio.sleep(0.1) 
-                except Exception as e:
-                    logger.error(f"Failed to send broadcast to {uid_to_broadcast}: {e}")
-                    failed_count +=1
-            await update.message.reply_text(f"✅ Habar ýaýlymy tamamlandy.\n{sent_count} ulanyja iberildi.\n{failed_count} ulanyja iberilmedi.")
-            await show_admin_menu(update, context)
-            return
+                    bot_method(*args, **kwargs_plain) # parse_mode yok
+                    return True
+                except Exception as e3:
+                    logger.error(f"Düz metin/Markdown'sız gönderme son denemesi de başarısız oldu (chat {chat_id}): {e3}")
+                    return False
+        else: 
+            logger.error(f"Başka bir API Hatası (chat {chat_id}): {e}")
+            raise 
+    except Exception as ex: 
+        logger.error(f"Mesaj gönderilirken beklenmedik genel hata (chat {chat_id}): {ex}")
+        return False
 
-        if context.user_data.get("adding_promo") and user.id == ADMIN_ID:
-            del context.user_data["adding_promo"]
+# --- Yetkilendirme ve Durum Kontrolü ---
+def is_admin_check(user_id):
+    data = load_data()
+    return user_id in data.get("admins", [])
+
+def is_super_admin_check(user_id):
+    return user_id == SUPER_ADMIN_ID
+
+def is_bot_active_for_user(user_id):
+    data = load_data()
+    if data.get("bot_operational_status") == "admin_only":
+        return is_admin_check(user_id)
+    return True
+
+# --- Admin Paneli (Basitleştirilmiş) ---
+def get_admin_panel_markup():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    buttons = [
+        types.InlineKeyboardButton("📢 Kanallara Genel Duyuru", callback_data="admin_public_channels"), # Sadece metin
+        types.InlineKeyboardButton("🗣️ Kullanıcılara Duyuru", callback_data="admin_alert_users"),     # Sadece metin
+        types.InlineKeyboardButton("➕ Kanal Ekle", callback_data="admin_add_channel"),
+        types.InlineKeyboardButton("➖ Kanal Sil", callback_data="admin_delete_channel_prompt"),
+        types.InlineKeyboardButton("🔑 VPN Kodunu Değiştir", callback_data="admin_change_vpn"),
+        types.InlineKeyboardButton("📊 İstatistikler", callback_data="admin_stats"),
+        types.InlineKeyboardButton("➕ Admin Ekle", callback_data="admin_add_admin_prompt"),
+        types.InlineKeyboardButton("➖ Admin Sil", callback_data="admin_remove_admin_prompt"),
+        types.InlineKeyboardButton("✍️ Başlangıç Msj Ayarla", callback_data=CB_SET_START_TEXT),
+        types.InlineKeyboardButton("✍️ Genel Kanal Dyr Ayarla", callback_data=CB_SET_CHANNEL_ANNOUNCE_TEXT),
+        types.InlineKeyboardButton("📜 Adminleri Gör", callback_data=CB_VIEW_ADMINS),
+        types.InlineKeyboardButton("📜 Kanalları Gör", callback_data=CB_VIEW_CHANNELS),
+    ]
+    markup.add(*buttons)
+    return markup
+
+@bot.message_handler(commands=['admin'])
+def admin_panel_command(message):
+    user_id = message.from_user.id
+    if not is_admin_check(user_id):
+        bot.reply_to(message, "⛔ Bu komutu kullanma yetkiniz yok.")
+        return
+    send_with_markdown_v2_fallback(bot.send_message, message.chat.id, "🤖 *Admin Paneli*\nLütfen bir işlem seçin:", reply_markup=get_admin_panel_markup())
+
+# --- BAKIM MODU KOMUTLARI ---
+@bot.message_handler(commands=['durdur'])
+def stop_bot_command(message):
+    if not is_admin_check(message.from_user.id):
+        bot.reply_to(message, "⛔ Bu komutu kullanma yetkiniz yok.")
+        return
+    data = load_data()
+    data["bot_operational_status"] = "admin_only"
+    save_data(data)
+    bot.reply_to(message, "🤖 Bot bakım moduna alındı. Sadece adminler komut kullanabilir.")
+
+@bot.message_handler(commands=['baslat'])
+def start_bot_command(message):
+    if not is_admin_check(message.from_user.id):
+        bot.reply_to(message, "⛔ Bu komutu kullanma yetkiniz yok.")
+        return
+    data = load_data()
+    data["bot_operational_status"] = "active"
+    save_data(data)
+    bot.reply_to(message, "🤖 Bot aktif moda alındı. Tüm kullanıcılar komut kullanabilir.")
+
+# --- Genel Kullanıcı Komutları ---
+@bot.message_handler(commands=['start'])
+def start_command(message):
+    user_id = message.from_user.id
+    if not is_bot_active_for_user(user_id):
+        bot.reply_to(message, "ℹ️ Bot şu anda bakım modundadır. Lütfen daha sonra tekrar deneyin.")
+        return
+
+    user_name_raw = message.from_user.first_name or "Kullanıcı"
+    user_name_escaped = escape_markdown_v2(user_name_raw)
+    logger.info(f"Kullanıcı {user_id} ({user_name_raw}) /start komutunu kullandı.")
+    add_user_if_not_exists(user_id)
+
+    data = load_data()
+    start_message_text_template = data.get("start_message_text", "👋 Hoş geldin {user_name}\\!")
+    final_start_text = start_message_text_template.replace("{user_name}", user_name_escaped)
+    send_with_markdown_v2_fallback(bot.send_message, message.chat.id, final_start_text)
+    
+    channels = data.get("channels", [])
+    if channels:
+        markup_channels = types.InlineKeyboardMarkup(row_width=1)
+        text_for_channels = "📣 VPN KODUNU ALMAK İSTİYORSANIZ AŞAĞIDA GÖSTERİLEN SPONSOR KANALLARA ABONE OLUNUZ\\:"
+        for index, channel_link in enumerate(channels, 1):
+            channel_username = channel_link.strip('@')
+            if channel_username:
+                display_name = escape_markdown_v2(channel_link)
+                button = types.InlineKeyboardButton(f"🔗 Kanal {index}: {display_name}", url=f"https://t.me/{channel_username}")
+                markup_channels.add(button)
+        button_check = types.InlineKeyboardButton("✅ ABONE OLDUM / KODU AL", callback_data="check_subscription")
+        markup_channels.add(button_check)
+        send_with_markdown_v2_fallback(bot.send_message, message.chat.id, text_for_channels, reply_markup=markup_channels)
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_subscription")
+def check_subscription_callback(call):
+    user_id = call.from_user.id
+    if not is_bot_active_for_user(user_id):
+        bot.answer_callback_query(call.id, "ℹ️ Bot bakımda.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id, "🔄 Abonelikleriniz kontrol ediliyor...", show_alert=False)
+    data = load_data()
+    channels = data.get("channels", [])
+    success_message_text = data.get("success_message", "KOD: ")
+    if not channels:
+        try: bot.edit_message_text("📢 Şu anda kontrol edilecek zorunlu kanal bulunmamaktadır.", call.message.chat.id, call.message.message_id)
+        except telebot.apihelper.ApiTelegramException: bot.send_message(call.message.chat.id, "📢 Şu anda kontrol edilecek zorunlu kanal bulunmamaktadır.")
+        return
+    all_subscribed, failed_channels_list = True, []
+    for channel_link in channels:
+        effective_channel_id = channel_link
+        if isinstance(channel_link, str) and not channel_link.startswith("@") and not channel_link.lstrip('-').isdigit():
+             effective_channel_id = f"@{channel_link}"
+        try:
+            member = bot.get_chat_member(chat_id=effective_channel_id, user_id=user_id)
+            if member.status not in ['member', 'administrator', 'creator']:
+                all_subscribed = False; failed_channels_list.append(channel_link)
+        except Exception as e: # Geniş tuttuk, SUPER_ADMIN'e bildirim önemli
+            logger.error(f"Abonelik kontrol hatası ({effective_channel_id}), kullanıcı {user_id}: {e}")
+            if SUPER_ADMIN_ID != 0:
+                 try: bot.send_message(SUPER_ADMIN_ID, f"⚠️ Abonelik Kontrol Hatası: Kanal: {effective_channel_id}, Kullanıcı: {user_id}. Hata: {str(e)[:200]}")
+                 except Exception as ex_admin: logger.error(f"SUPER_ADMIN'e uyarı gönderilemedi: {ex_admin}")
+            all_subscribed = False; failed_channels_list.append(channel_link)
+    if all_subscribed:
+        try: bot.edit_message_text(success_message_text, call.message.chat.id, call.message.message_id, reply_markup=None, parse_mode="MarkdownV2")
+        except telebot.apihelper.ApiTelegramException as e: # Markdown hatası veya mesaj bulunamadı
+            logger.warning(f"Başarı mesajı düzenlenemedi ({e}), yeni mesaj gönderiliyor.")
+            send_with_markdown_v2_fallback(bot.send_message, call.message.chat.id, success_message_text)
+    else:
+        error_text = "❌ Lütfen aşağıdaki kanalların hepsine abone olduğunuzdan emin olun ve tekrar deneyin:\n\n"
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for ch_link in channels:
+            prefix = "❗️" if ch_link in failed_channels_list else "➡️"
+            markup.add(types.InlineKeyboardButton(f"{prefix} Kanal: {escape_markdown_v2(ch_link)}", url=f"https://t.me/{ch_link.lstrip('@')}"))
+        markup.add(types.InlineKeyboardButton("🔄 TEKRAR KONTROL ET", callback_data="check_subscription"))
+        try: bot.edit_message_text(error_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="MarkdownV2") # error_text Markdown içermiyor
+        except telebot.apihelper.ApiTelegramException: bot.send_message(call.message.chat.id, error_text, reply_markup=markup, parse_mode="MarkdownV2")
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    user_id = message.from_user.id
+    if not is_bot_active_for_user(user_id):
+        bot.reply_to(message, "ℹ️ Bot şu anda bakım modundadır. Lütfen daha sonra tekrar deneyin.")
+        return
+    base_help = "🤖 *BOT KOMUTLARI* 🤖\n\n👤 *Genel Kullanıcı Komutları:*\n/start \\- Botu başlatır\\.\n/help \\- Bu yardım mesajını gösterir\\.\n"
+    admin_help_text = ""
+    if is_admin_check(user_id):
+        admin_help_text = "\n👑 *Admin Komutları:*\n/admin \\- Admin panelini açar\\.\n/durdur \\- Bakım modu\\.\n/baslat \\- Aktif mod\\.\n/yanitla `<id> <mesaj>` \\- Yanıtla\\.\n"
+    full_help_text = base_help + admin_help_text
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("✉️ Destek Talebi Oluştur", callback_data=CB_CREATE_SUPPORT_REQUEST))
+    send_with_markdown_v2_fallback(bot.reply_to, message, full_help_text, reply_markup=markup)
+
+# --- Destek Talebi İşleyicileri ---
+@bot.callback_query_handler(func=lambda call: call.data == CB_CREATE_SUPPORT_REQUEST)
+def create_support_request_callback(call):
+    if not is_bot_active_for_user(call.from_user.id): bot.answer_callback_query(call.id, "ℹ️ Bot bakımda.", show_alert=True); return
+    bot.answer_callback_query(call.id)
+    try: bot.delete_message(call.message.chat.id, call.message.message_id)
+    except: pass
+    sent_msg = bot.send_message(call.message.chat.id, "Lütfen sorununuzu veya mesajınızı detaylıca yazın. Mesajınız adminlere iletilecektir.")
+    bot.register_next_step_handler(sent_msg, process_user_support_message)
+
+def process_user_support_message(message):
+    user_id, user_name_raw = message.from_user.id, message.from_user.first_name or f"User_{message.from_user.id}"
+    user_name_esc = escape_markdown_v2(user_name_raw)
+    user_username_raw = f"@{message.from_user.username}" if message.from_user.username else "Yok"
+    user_username_esc = escape_markdown_v2(user_username_raw)
+    support_text_esc = escape_markdown_v2(message.text)
+    admin_msg_text = (f"🆘 *Yeni Destek Talebi* 🆘\n\n*Kullanıcı:* {user_name_esc}\n"
+                      f"*Telegram ID:* `{user_id}`\n*Kullanıcı Adı:* {user_username_esc}\n\n"
+                      f"*Mesajı:*\n{support_text_esc}\n\nCevaplamak için: `/yanitla {user_id} <mesajınız>`")
+    data = load_data()
+    admin_ids = data.get("admins", [])
+    if not admin_ids and SUPER_ADMIN_ID != 0: admin_ids = [SUPER_ADMIN_ID]
+    if not admin_ids: logger.error("Destek talebi iletilecek admin yok!"); bot.reply_to(message, "Üzgünüz, adminlere ulaşılamadı."); return
+    sent_count = 0
+    for admin_id_target in admin_ids:
+        try: bot.send_message(admin_id_target, admin_msg_text, parse_mode="MarkdownV2"); sent_count +=1
+        except Exception as e: logger.error(f"Admin {admin_id_target} destek iletilemedi: {e}")
+    if sent_count > 0: bot.reply_to(message, "Mesajınız adminlere iletildi.")
+    else: bot.reply_to(message, "Mesajınız adminlere iletilirken sorun oluştu.")
+
+@bot.message_handler(commands=['yanitla'])
+def reply_to_user_command(message):
+    if not is_admin_check(message.from_user.id): bot.reply_to(message, "⛔ Yetkiniz yok."); return
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3: bot.reply_to(message, "Kullanım: `/yanitla <kullanıcı_id> <mesajınız>`", parse_mode="MarkdownV2"); return
+    try: user_id_to_reply, reply_text_raw = int(parts[1]), parts[2]
+    except ValueError: bot.reply_to(message, "Geçersiz kullanıcı ID."); return
+    final_reply_to_user = f"✉️ *Adminden Yanıt Var!*\n\n{reply_text_raw}" # Adminin yazdığı Markdown'ı koru
+    if send_with_markdown_v2_fallback(bot.send_message, user_id_to_reply, final_reply_to_user):
+        bot.reply_to(message, f"✅ `{user_id_to_reply}` ID'li kullanıcıya yanıtınız gönderildi.", parse_mode="MarkdownV2")
+    else: bot.reply_to(message, f"⚠️ `{user_id_to_reply}` ID'li kullanıcıya yanıt gönderilemedi veya Markdown sorunu oldu (logları kontrol edin).", parse_mode="MarkdownV2")
+
+# --- Ayarlanabilir Metin Mesaj İşleyicileri (Basitleştirilmiş) ---
+def _set_text_message_prompt(call, text_key_to_set, prompt_identifier_text):
+    if not is_admin_check(call.from_user.id): bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True); return
+    bot.answer_callback_query(call.id)
+    try:
+        sent_msg = bot.edit_message_text(prompt_identifier_text, call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException:
+        sent_msg = bot.send_message(call.message.chat.id, prompt_identifier_text, parse_mode="MarkdownV2")
+    bot.register_next_step_handler(sent_msg, _process_set_text_message, call.message.message_id, text_key_to_set)
+
+def _process_set_text_message(message, original_message_id, text_key_to_set):
+    if not is_admin_check(message.from_user.id): return
+    new_text = message.text # Adminin girdiği ham metin
+    try: bot.delete_message(message.chat.id, message.message_id)
+    except: pass
+    if not new_text.strip(): bot.send_message(message.chat.id, "❌ Mesaj boş olamaz. İşlem iptal edildi.")
+    else:
+        data = load_data()
+        data[text_key_to_set] = new_text # Sadece metni kaydet
+        save_data(data)
+        bot.send_message(message.chat.id, "✅ Mesaj başarıyla güncellendi.")
+    admin_panel_back_for_next_step(message.chat.id, original_message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data == CB_SET_START_TEXT)
+def admin_set_start_text_callback(call):
+    prompt = "🆕 Lütfen kullanıcılar /start yazdığında gösterilecek yeni metin mesajını girin.\nKullanıcının adını eklemek için `{user_name}` kullanabilirsiniz.\nMarkdownV2 kullanabilirsiniz."
+    _set_text_message_prompt(call, "start_message_text", prompt)
+
+@bot.callback_query_handler(func=lambda call: call.data == CB_SET_CHANNEL_ANNOUNCE_TEXT)
+def admin_set_channel_announce_text_callback(call):
+    prompt = "📢 Lütfen kanallara gönderilecek genel duyuru için yeni metin mesajını girin.\nBot kullanıcı adını eklemek için `{bot_username}` kullanabilirsiniz.\nMarkdownV2 kullanabilirsiniz."
+    _set_text_message_prompt(call, "channel_announcement_text", prompt)
+
+# --- KULLANICILARA DUYURU (Sadece Metin) ---
+@bot.callback_query_handler(func=lambda call: call.data == "admin_alert_users") # Eskiden seçenek sunuyordu, şimdi direkt metin istiyor
+def admin_alert_users_text_prompt_callback(call):
+    if not is_admin_check(call.from_user.id): bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True); return
+    bot.answer_callback_query(call.id)
+    msg_text = "🗣️ Tüm bot kullanıcılarına göndermek istediğiniz *metin* mesajını yazın (Markdown kullanabilirsiniz):"
+    try:
+        sent_msg = bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException:
+        sent_msg = bot.send_message(call.message.chat.id, msg_text, parse_mode="MarkdownV2")
+    bot.register_next_step_handler(sent_msg, process_alert_users_message_text_only, call.message.message_id)
+
+def process_alert_users_message_text_only(message, original_message_id): # Sadece metin işler
+    if not is_admin_check(message.from_user.id): return
+    alert_text_content = message.text # Adminin girdiği ham metin
+    data = load_data(); users = data.get("users", [])
+    try: bot.delete_message(message.chat.id, message.message_id)
+    except: pass
+    if not users: bot.send_message(message.chat.id, "ℹ️ Mesaj gönderilecek kullanıcı yok.")
+    else:
+        status_text = f"📢 {len(users)} kullanıcıya duyuru gönderiliyor..."
+        try: status_msg = bot.edit_message_text(status_text, message.chat.id, original_message_id, parse_mode="MarkdownV2")
+        except telebot.apihelper.ApiTelegramException: status_msg = bot.send_message(message.chat.id, status_text, parse_mode="MarkdownV2")
+        
+        success, failed, blocked = 0, 0, 0
+        for user_id in users:
+            sent_ok = False
             try:
-                promo_code, discount_str = text.split()
-                discount = int(discount_str)
-                if not (1 <= discount <= 100): raise ValueError("Prosent aralykda däl")
-                promos = Database.read_promos()
-                promos[promo_code.upper()] = discount
-                Database.write_promos(promos)
-                await update.message.reply_text(f"✅ Promokod goşuldy: {promo_code.upper()} ({discount}%)")
-            except ValueError:
-                await update.message.reply_text("❌ Nädogry format. Mysal: KOD10 10")
-            await show_admin_menu(update, context)
-            return
-
-        if context.user_data.get("waiting_for_promo"): 
-            del context.user_data["waiting_for_promo"]
-            promos = Database.read_promos()
-            promo_code_entered = text.upper()
-            if promo_code_entered in promos:
-                discount_val = promos[promo_code_entered]
-                context.user_data["promo_discount"] = discount_val # type: ignore
-                await update.message.reply_text(f"✅ {discount_val}% skidka promokodyňyz kabul edildi! Indi VPN bahalaryny görüp bilersiňiz.")
-                await update.message.reply_text("Indi '💰 VPN Bahalary' düwmesine basyp, täze bahalary görüň.")
-            else:
-                await update.message.reply_text("❌ Promokod nädogry ýa-da möhleti geçen.")
-            await show_main_menu(update, user)
-            return
-
-    if user_id_str in active_orders:
-        target_id_str = active_orders[user_id_str]
-        sender_name = "Ulanyjy" if user.id != ADMIN_ID else "Admin"
-        if photo:
-            await context.bot.send_photo(chat_id=target_id_str, photo=photo.file_id, caption=f"👤 {sender_name} ({user.full_name}): [Surat]")
-        elif text: 
-             await context.bot.send_message(chat_id=target_id_str, text=f"💬 {sender_name} ({user.full_name}):\n{text}")
-        return 
-
-    if user.id == ADMIN_ID and any(text.startswith(proto) for proto in ("ss://", "vmess://", "trojan://", "vless://", "tuic://", "hysteria2://", "hy2://", "nekoray://")):
-        potential_target_id_str = active_orders.get(str(ADMIN_ID))
-        if potential_target_id_str:
-            users = Database.read_db()
-            if potential_target_id_str not in users:
-                users[potential_target_id_str] = {"keys": [], "ref_count": 0, "referrals": [], "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-            
-            if 'keys' not in users[potential_target_id_str]:
-                users[potential_target_id_str]['keys'] = []
-                
-            users[potential_target_id_str]["keys"].append(text)
-            Database.save_db(users)
-            await update.message.reply_text(f"✅ Açar üstünlikli şu ulanyja ({potential_target_id_str}) goşuldy we iberildi.")
-            await context.bot.send_message(chat_id=int(potential_target_id_str), text=f"🔑 Admin size täze VPN açar iberdi:\n`{text}`", parse_mode="Markdown")
-            return 
-
-    if user.id != ADMIN_ID and any(text.startswith(proto) for proto in ("ss://", "vmess://", "trojan://", "vless://", "tuic://", "hysteria2://", "hy2://", "nekoray://")):
-        users = Database.read_db()
-        if user_id_str not in users:
-             users[user_id_str] = {"keys": [], "ref_count": 0, "referrals": [], "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-        
-        if 'keys' not in users[user_id_str]:
-            users[user_id_str]['keys'] = []
-
-        users[user_id_str]["keys"].append(text)
-        Database.save_db(users)
-        await update.message.reply_text("✅ Açar üstünlikli 'Açarlarym' bölümüne goşuldy!")
+                sent_ok = send_with_markdown_v2_fallback(bot.send_message, user_id, alert_text_content)
+                if sent_ok: success += 1
+                # else: failed += 1 # Fallback zaten logladı, burada tekrar saymaya gerek yok, dış try/except yakalar
+            except telebot.apihelper.ApiTelegramException as e_outer:
+                logger.error(f"Kullanıcı {user_id} duyuru (metin) gönderilemedi (API): {e_outer}")
+                if any(err_str in str(e_outer).lower() for err_str in ["bot was blocked", "user is deactivated", "chat not found"]):
+                    blocked +=1
+                failed +=1
+            except Exception as e_gen: logger.error(f"Kullanıcı {user_id} duyuru (metin) genel hata: {e_gen}"); failed +=1
+            time.sleep(0.05) # Hafifletildi
+        report = f"✅ Duyuru Tamamlandı:\nBaşarılı: {success}, Başarısız: {failed}, Engelli/Ulaşılamayan: {blocked}"
+        try: bot.edit_message_text(report, status_msg.chat.id, status_msg.message_id, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
+        except telebot.apihelper.ApiTelegramException: bot.send_message(status_msg.chat.id, report, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
         return
+    admin_panel_back_for_next_step(message.chat.id, original_message_id)
 
-    if user.id != ADMIN_ID and text and not text.startswith('/'): 
-        logger.info(f"User {user_id_str} sent unhandled text: {text}. Showing main menu.")
-        await show_main_menu(update, user)
-
-
-async def vpn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("🚫 Bu buýrugy diňe admin ulanyp biler!") # type: ignore
-        return
-
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text("❌ Ulanyş usuly: /vpn <ulanyjy_id> <açar_kody>") # type: ignore
-        return
-
-    target_id = context.args[0]
-    key = " ".join(context.args[1:]).strip()
-
-    if not any(key.startswith(proto) for proto in ("ss://", "vmess://", "trojan://", "vless://", "tuic://", "hysteria2://", "hy2://", "nekoray://")):
-        await update.message.reply_text("❌ Açar formaty nädogry! (ss://, vmess://, etc. bolmaly)") # type: ignore
-        return
-
-    users = Database.read_db()
-    if target_id not in users:
-        users[target_id] = {"keys": [], "ref_count": 0, "referrals": [], "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-    
-    if 'keys' not in users[target_id]:
-        users[target_id]['keys'] = []
-        
-    users[target_id]["keys"].append(key)
-    Database.save_db(users)
-
-    await update.message.reply_text(f"✅ Açar üstünlikli {target_id} ID-li ulanyja goşuldy.") # type: ignore
-    try:
-        await context.bot.send_message(chat_id=int(target_id), text=f"🔑 Admin size täze VPN açar berdi:\n`{key}`", parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Failed to send key to user {target_id} via PM: {e}")
-        await update.message.reply_text(f"⚠️ Ulanyja PM iberilmedi (mümkin boty bloklan ýa-da ID ýalňyş). Ýöne açar bazada saklandy.") # type: ignore
-
-async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active_orders
-    if not update.effective_user: return
-    user_id_str = str(update.effective_user.id)
-    
-    admin_counterpart = None
-    if user_id_str in active_orders:
-        admin_counterpart = active_orders.pop(user_id_str)
-    
-    user_counterpart = None
-    if user_id_str == str(ADMIN_ID):
-        for u_id, adm_id in list(active_orders.items()): 
-            if adm_id == user_id_str:
-                user_counterpart = u_id
-                del active_orders[u_id]
-                break
-    
-    if admin_counterpart:
-        if admin_counterpart in active_orders: 
-            del active_orders[admin_counterpart]
-        await update.message.reply_text("🔕 Admin bilen aragatnaşyk kesildi (siziň tarapyňyzdan).") # type: ignore
+# --- KANALLARA GENEL DUYURU (Sadece Metin) ---
+@bot.callback_query_handler(func=lambda call: call.data == "admin_public_channels")
+def admin_public_to_channels_callback(call):
+    if not is_admin_check(call.from_user.id): bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True); return
+    bot.answer_callback_query(call.id, "İşleniyor...")
+    data = load_data(); channels_to_send = data.get("channels", [])
+    if not channels_to_send:
+        try: bot.edit_message_text("ℹ️ Duyuru yapılacak kanal yok.", call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup())
+        except: pass; return
+    announce_text_template = data.get("channel_announcement_text", "*Varsayılan Duyuru*")
+    try: bot_username = bot.get_me().username
+    except Exception as e: logger.error(f"Bot adı alınamadı: {e}"); bot_username = "BOT_KULLANICI_ADI"
+    final_announce_text = announce_text_template.replace("{bot_username}", bot_username) # Ham metin
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🤖 BOTA GİT 🤖", url=f"https://t.me/{bot_username}?start=channelAnnounce"))
+    status_text = f"📢 {len(channels_to_send)} kanala genel duyuru gönderiliyor..."
+    try: status_msg = bot.edit_message_text(status_text, call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException: status_msg = bot.send_message(call.message.chat.id, status_text, parse_mode="MarkdownV2")
+    success, failed = 0, 0
+    for channel_item in channels_to_send:
+        sent_ok = False
         try:
-            await context.bot.send_message(chat_id=int(admin_counterpart), text=f"ℹ️ Ulanyjy {update.effective_user.full_name} ({user_id_str}) aragatnaşygy kesdi.")
-        except Exception as e:
-            logger.error(f"Could not notify admin {admin_counterpart} about user stopping: {e}")
+            sent_ok = send_with_markdown_v2_fallback(bot.send_message, channel_item, final_announce_text, reply_markup=markup)
+            if sent_ok: success += 1
+            else: failed += 1
+        except Exception as e_outer: logger.error(f"Kanal {channel_item} genel duyuru gönderilemedi (dış): {e_outer}"); failed +=1
+        time.sleep(0.1) # Hafifletildi
+    report = f"✅ Kanallara genel duyuru tamamlandı:\nBaşarılı: {success}, Başarısız: {failed}"
+    try: bot.edit_message_text(report, status_msg.chat.id, status_msg.message_id, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException: bot.send_message(status_msg.chat.id, report, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
 
-    elif user_counterpart: 
-        await update.message.reply_text(f"🔕 Ulanyjy {user_counterpart} bilen aragatnaşyk kesildi (siziň tarapyňyzdan).") # type: ignore
-        try:
-            await context.bot.send_message(chat_id=int(user_counterpart), text="ℹ️ Admin sizin bilen aragatnaşygy kesdi.")
-        except Exception as e:
-             logger.error(f"Could not notify user {user_counterpart} about admin stopping: {e}")
-    else:
-        await update.message.reply_text("ℹ️ Häzirki wagtda aktiv çat ýok.") # type: ignore
+# --- ADMİNLERİ VE KANALLARI GÖRÜNTÜLEME (Aynı kalabilir) ---
+@bot.callback_query_handler(func=lambda call: call.data == CB_VIEW_ADMINS)
+def admin_view_admins_callback(call): # Bu fonksiyon önceki gibi kalabilir
+    if not is_admin_check(call.from_user.id): bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True); return
+    bot.answer_callback_query(call.id); data = load_data(); admin_ids = data.get("admins", [])
+    text_to_send = "ℹ️ Kayıtlı admin yok." if not admin_ids else "👑 *Kayıtlı Adminler:*\n"
+    if admin_ids:
+        details_list = []
+        for admin_id in admin_ids:
+            parts = [f"`{admin_id}`"]
+            if admin_id == SUPER_ADMIN_ID: parts.append("\\(Süper Admin\\)")
+            try:
+                chat = bot.get_chat(admin_id)
+                if chat.first_name: parts.append(f"\\- {escape_markdown_v2(chat.first_name)}")
+                if chat.username: parts.append(f"\\(@{escape_markdown_v2(chat.username)}\\)")
+            except: pass # Detay alınamazsa sorun değil
+            details_list.append(" ".join(parts))
+        text_to_send += "\n".join(details_list)
+    try: bot.edit_message_text(text_to_send, call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException as e:
+        if "message is not modified" not in str(e).lower(): bot.send_message(call.message.chat.id, text_to_send, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
 
+@bot.callback_query_handler(func=lambda call: call.data == CB_VIEW_CHANNELS)
+def admin_view_channels_callback(call): # Bu fonksiyon önceki gibi kalabilir
+    if not is_admin_check(call.from_user.id): bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True); return
+    bot.answer_callback_query(call.id); data = load_data(); channels = data.get("channels", [])
+    text_to_send = "ℹ️ Kayıtlı kanal yok." if not channels else "📢 *Kayıtlı Kanallar:*\n" + "\n".join([escape_markdown_v2(ch) for ch in channels])
+    try: bot.edit_message_text(text_to_send, call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException as e:
+        if "message is not modified" not in str(e).lower(): bot.send_message(call.message.chat.id, text_to_send, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
 
-async def add_promo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or update.effective_user.id != ADMIN_ID:
-        return
-    if not update.message: return
+# --- DİĞER ADMIN İŞLEVLERİ (Kanal Ekle/Sil, VPN Kodu, İstatistikler, Admin Ekle/Sil) ---
+# Bu fonksiyonlar büyük ölçüde aynı kalabilir.
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_channel")
+def admin_add_channel_prompt_callback(call):
+    if not is_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True)
+    bot.answer_callback_query(call.id)
+    msg_text = ("➕ Eklenecek kanal\\(lar\\)ın kullanıcı adlarını girin \\(örneğin: `@kanal1 @kanal2`\\)\\. "
+                "Botun kanallarda *yönetici olduğundan* emin olun\\.")
+    try: sent_msg = bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
+    except: sent_msg = bot.send_message(call.message.chat.id, msg_text, parse_mode="MarkdownV2")
+    bot.register_next_step_handler(sent_msg, process_add_multiple_channels, call.message.message_id)
 
-    if not context.args or len(context.args) != 2:
-        await update.message.reply_text("Ullanylyşy: /add_promo <KOD> <SKIDKA_PROSENTI>")
-        return
-    
-    promo_code, discount_str = context.args
-    try:
-        discount = int(discount_str)
-        if not (1 <= discount <= 100):
-            raise ValueError("Prosent aralygy 1-100 bolmaly.")
-    except ValueError as e:
-        await update.message.reply_text(f"Nädogry skidka: {e}")
-        return
-    
-    promos = Database.read_promos()
-    promos[promo_code.upper()] = discount
-    Database.write_promos(promos)
-    await update.message.reply_text(f"✅ Skidka: {promo_code.upper()} ({discount}%) Üstünlikli goşuldy!")
+def process_add_multiple_channels(message, original_message_id):
+    if not is_admin_check(message.from_user.id): return
+    inputs = message.text.split(); added, failed, exists = [], [], []
+    data = load_data()
+    for ch_in in inputs:
+        new_ch = ch_in.strip()
+        if not new_ch: continue
+        if not new_ch.startswith("@") and not new_ch.lstrip('-').isdigit(): failed.append(f"{escape_markdown_v2(new_ch)} (Geçersiz)"); continue
+        if new_ch not in data["channels"]: data["channels"].append(new_ch); added.append(new_ch)
+        else: exists.append(new_ch)
+    if added: save_data(data)
+    parts = []
+    if added: parts.append(f"✅ Eklendi:\n" + "\n".join(map(escape_markdown_v2, added)))
+    if failed: parts.append(f"❌ Eklenemedi:\n" + "\n".join(failed))
+    if exists: parts.append(f"ℹ️ Zaten Var:\n" + "\n".join(map(escape_markdown_v2,exists)))
+    response = "\n\n".join(parts) if parts else "İşlem yapılacak kanal bulunamadı."
+    try: bot.delete_message(message.chat.id, message.message_id)
+    except: pass
+    bot.send_message(message.chat.id, response, parse_mode="MarkdownV2")
+    admin_panel_back_for_next_step(message.chat.id, original_message_id)
 
-async def remove_promo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or update.effective_user.id != ADMIN_ID:
-        return
-    if not update.message: return
+@bot.callback_query_handler(func=lambda call: call.data == "admin_delete_channel_prompt")
+def admin_delete_channel_prompt_callback(call):
+    if not is_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True)
+    bot.answer_callback_query(call.id); data = load_data(); channels = data.get("channels", [])
+    if not channels:
+        try: bot.edit_message_text("➖ Silinecek kanal yok.", call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup())
+        except: pass; return
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for ch in channels: markup.add(types.InlineKeyboardButton(f"🗑️ Sil: {escape_markdown_v2(ch)}", callback_data=f"admin_del_ch_confirm:{ch}"))
+    markup.add(types.InlineKeyboardButton("↩️ Geri", callback_data="admin_panel_back"))
+    try: bot.edit_message_text("➖ Silinecek kanalı seçin:", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="MarkdownV2")
+    except: pass
 
-    if not context.args or len(context.args) != 1:
-        await update.message.reply_text("Ullanylyşy: /remove_promo <KOD>")
-        return
-    
-    promo_code_to_remove = context.args[0].upper()
-    promos = Database.read_promos()
-    if promo_code_to_remove in promos:
-        del promos[promo_code_to_remove]
-        Database.write_promos(promos)
-        await update.message.reply_text(f"✅ Promokod '{promo_code_to_remove}' üstünlikli pozuldy!")
-    else:
-        await update.message.reply_text(f"❌ '{promo_code_to_remove}' atly promokod tapylmady!")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_del_ch_confirm:"))
+def admin_delete_channel_confirm_callback(call):
+    if not is_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True)
+    ch_to_remove = call.data.split(":", 1)[1]; data = load_data()
+    if ch_to_remove in data["channels"]: data["channels"].remove(ch_to_remove); save_data(data); bot.answer_callback_query(call.id, f"✅ Silindi.")
+    else: bot.answer_callback_query(call.id, f"ℹ️ Bulunamadı.", show_alert=True)
+    admin_delete_channel_prompt_callback(call) 
 
+@bot.callback_query_handler(func=lambda call: call.data == "admin_change_vpn")
+def admin_change_vpn_prompt_callback(call):
+    if not is_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True)
+    bot.answer_callback_query(call.id); data = load_data(); current_code = data.get("success_message", "KOD: ")
+    msg_text = (f"🔑 Yeni VPN kodunu girin\\. Mevcut:\n`{escape_markdown_v2(current_code)}`\nMarkdown kullanabilirsiniz\\.")
+    try: sent_msg = bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
+    except: sent_msg = bot.send_message(call.message.chat.id, msg_text, parse_mode="MarkdownV2")
+    bot.register_next_step_handler(sent_msg, process_change_vpn_code, call.message.message_id)
 
-# --- FastAPI Application ---
-ptb_application: Application 
+def process_change_vpn_code(message, original_message_id): 
+    if not is_admin_check(message.from_user.id): return
+    new_code = message.text; try: bot.delete_message(message.chat.id, message.message_id); except: pass
+    if not new_code.strip(): bot.send_message(message.chat.id, "❌ Kod boş olamaz.")
+    else: data = load_data(); data["success_message"] = new_code; save_data(data); bot.send_message(message.chat.id, "✅ VPN kodu güncellendi.")
+    admin_panel_back_for_next_step(message.chat.id, original_message_id)
 
-@asynccontextmanager # DECORATOR ADDED HERE
-async def lifespan(app: FastAPI):
-    global ptb_application
-    logger.info("FastAPI application starting up...")
-    
-    ptb_builder = Application.builder().token(BOT_TOKEN)
-    ptb_application = ptb_builder.build()
+@bot.callback_query_handler(func=lambda call: call.data == "admin_stats")
+def admin_stats_callback(call):
+    if not is_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True)
+    bot.answer_callback_query(call.id); data = load_data()
+    stats = (f"📊 *Bot İstatistikleri*\n\n👤 Kullanıcı: {len(data.get('users',[]))}\n📢 Kanal: {len(data.get('channels',[]))}\n"
+             f"👑 Admin: {len(data.get('admins',[]))}\n⚙️ Durum: `{escape_markdown_v2(data.get('bot_operational_status','active'))}`\n\n"
+             f"_{escape_markdown_v2(time.strftime('%Y-%m-%d %H:%M:%S %Z'))}_")
+    try: bot.edit_message_text(stats, call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException as e:
+        if "message is not modified" not in str(e).lower(): bot.send_message(call.message.chat.id, stats, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
 
-    # Register handlers
-    ptb_application.add_handler(CommandHandler("start", start))
-    ptb_application.add_handler(CallbackQueryHandler(admin_stats, pattern="^admin_stats$"))
-    ptb_application.add_handler(CallbackQueryHandler(admin_broadcast, pattern="^admin_broadcast$"))
-    ptb_application.add_handler(CallbackQueryHandler(admin_export, pattern="^admin_export$"))
-    ptb_application.add_handler(CallbackQueryHandler(admin_add_promo_btn, pattern="^admin_add_promo_btn$")) 
-    ptb_application.add_handler(CallbackQueryHandler(admin_remove_promo_btn, pattern="^admin_remove_promo_btn$")) 
-    ptb_application.add_handler(CallbackQueryHandler(admin_change_test, pattern="^admin_change_test$"))
-    
-    ptb_application.add_handler(CommandHandler("stop", stop_command))
-    ptb_application.add_handler(CommandHandler("add_promo", add_promo_command)) 
-    ptb_application.add_handler(CommandHandler("remove_promo", remove_promo_command)) 
-    ptb_application.add_handler(CommandHandler("vpn", vpn_command))
-    
-    ptb_application.add_handler(CallbackQueryHandler(button_handler)) 
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_admin_prompt")
+def admin_add_admin_prompt_callback(call):
+    if not is_super_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "⛔ Sadece Süper Admin.", show_alert=True)
+    bot.answer_callback_query(call.id); msg_text = "➕ Admin yapılacak kullanıcının Telegram ID'sini girin:"
+    try: sent_msg = bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id)
+    except: sent_msg = bot.send_message(call.message.chat.id, msg_text)
+    bot.register_next_step_handler(sent_msg, process_add_admin_id, call.message.message_id)
 
-    ptb_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    ptb_application.add_handler(MessageHandler(filters.PHOTO, message_handler))
+def process_add_admin_id(message, original_message_id):
+    if not is_super_admin_check(message.from_user.id): return
+    try: bot.delete_message(message.chat.id, message.message_id)
+    except: pass
+    try: new_admin_id = int(message.text.strip())
+    except ValueError: bot.send_message(message.chat.id, "❌ Geçersiz ID."); admin_panel_back_for_next_step(message.chat.id, original_message_id); return
+    data = load_data()
+    if new_admin_id in data["admins"]: bot.send_message(message.chat.id, f"ℹ️ `{new_admin_id}` zaten admin.", parse_mode="MarkdownV2")
+    else: data["admins"].append(new_admin_id); save_data(data); bot.send_message(message.chat.id, f"✅ `{new_admin_id}` admin yapıldı.", parse_mode="MarkdownV2")
+    admin_panel_back_for_next_step(message.chat.id, original_message_id)
 
-    await ptb_application.initialize()
+@bot.callback_query_handler(func=lambda call: call.data == "admin_remove_admin_prompt")
+def admin_remove_admin_prompt_callback(call):
+    if not is_super_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "⛔ Sadece Süper Admin.", show_alert=True)
+    bot.answer_callback_query(call.id); data = load_data(); admins_to_list = [aid for aid in data.get("admins", []) if aid != SUPER_ADMIN_ID]
+    if not admins_to_list:
+        try: bot.edit_message_text("➖ Silinecek başka admin yok.", call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup())
+        except: pass; return
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for aid in admins_to_list: markup.add(types.InlineKeyboardButton(f"🗑️ Sil: {aid}", callback_data=f"admin_rem_adm_confirm:{aid}"))
+    markup.add(types.InlineKeyboardButton("↩️ Geri", callback_data="admin_panel_back"))
+    try: bot.edit_message_text("➖ Silinecek admini seçin:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+    except: pass
 
-    webhook_full_url = f"{WEBHOOK_URL.rstrip('/')}/{SECRET_PATH.lstrip('/')}"
-    logger.info(f"Setting webhook to: {webhook_full_url}")
-    await ptb_application.bot.set_webhook(
-        url=webhook_full_url,
-        allowed_updates=Update.ALL_TYPES,
-    )
-    
-    await ptb_application.start()
-    logger.info("PTB application started and webhook set.")
-    
-    try:
-        yield 
-    finally:
-        logger.info("FastAPI application shutting down...")
-        if ptb_application.running: 
-             await ptb_application.stop()
-        await ptb_application.shutdown()
-        logger.info("PTB application shut down.")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_rem_adm_confirm:"))
+def admin_remove_admin_confirm_callback(call):
+    if not is_super_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "⛔ Sadece Süper Admin.", show_alert=True)
+    try: admin_id_to_remove = int(call.data.split(":", 1)[1])
+    except: bot.answer_callback_query(call.id, "Geçersiz veri.", show_alert=True); admin_remove_admin_prompt_callback(call); return
+    data = load_data()
+    if admin_id_to_remove == SUPER_ADMIN_ID: bot.answer_callback_query(call.id, "⛔ Süper Admin silinemez.", show_alert=True)
+    elif admin_id_to_remove in data.get("admins", []): data["admins"].remove(admin_id_to_remove); save_data(data); bot.answer_callback_query(call.id, f"✅ Admin {admin_id_to_remove} silindi.")
+    else: bot.answer_callback_query(call.id, f"ℹ️ Admin {admin_id_to_remove} bulunamadı.", show_alert=True)
+    admin_remove_admin_prompt_callback(call)
 
-fastapi_app = FastAPI(lifespan=lifespan) # FastAPI INITIALIZED WITH LIFESPAN
+def admin_panel_back_for_next_step(chat_id, original_message_id):
+    try: bot.edit_message_text("🤖 *Admin Paneli*\nLütfen bir işlem seçin:", chat_id, original_message_id, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException as e:
+        logger.warning(f"Next_step sonrası panel düzenlenemedi (ID: {original_message_id}): {e}")
+        bot.send_message(chat_id, "🤖 *Admin Paneli*\nLütfen bir işlem seçin:", reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
 
+@bot.callback_query_handler(func=lambda call: call.data == "admin_panel_back")
+def admin_panel_back_callback(call):
+    if not is_admin_check(call.from_user.id): bot.answer_callback_query(call.id, "Yetkiniz yok.", show_alert=True); return
+    bot.answer_callback_query(call.id)
+    try: bot.edit_message_text("🤖 *Admin Paneli*\nLütfen bir işlem seçin:", call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
+    except Exception as e: logger.error(f"Admin paneline geri dönerken hata: {e}"); bot.send_message(call.message.chat.id, "🤖 *Admin Paneli*\nLütfen bir işlem seçin:", reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
 
-@fastapi_app.post(f"/{SECRET_PATH.lstrip('/')}")
-async def telegram_webhook(request: Request):
-    try:
-        data = await request.json()
-        update = Update.de_json(data, ptb_application.bot)
-        logger.debug(f"Received update: {update.update_id}")
-        await ptb_application.process_update(update)
-        return Response(status_code=200)
-    except json.JSONDecodeError:
-        logger.error("Webhook received invalid JSON.")
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
-    except Exception as e:
-        logger.error(f"Error processing update in webhook: {e}", exc_info=True)
-        return Response(status_code=200) 
+# --- Bilinmeyen Komutlar ve Mesajlar ---
+@bot.message_handler(func=lambda message: True, content_types=['text', 'audio', 'document', 'photo', 'sticker', 'video', 'video_note', 'voice', 'location', 'contact'])
+def handle_other_messages(message):
+    user_id, text = message.from_user.id, message.text
+    if not is_bot_active_for_user(user_id) and (not text or not text.startswith(('/start', '/help', '/admin'))): return
+    if text and text.startswith('/'):
+        known_cmds = ['/start', '/help', '/admin', '/durdur', '/baslat', '/yanitla']
+        if not any(text.startswith(cmd) for cmd in known_cmds):
+            logger.info(f"Kullanıcı {user_id} bilinmeyen komut: {text}")
+            escaped_text, reply_msg = escape_markdown_v2(text), f"⛔ `{escaped_text}` komutu bulunamadı\\. "
+            reply_msg += "/help veya /admin kullanın\\." if is_admin_check(user_id) else "/help kullanın\\."
+            bot.reply_to(message, reply_msg, parse_mode="MarkdownV2")
+            if SUPER_ADMIN_ID != 0 and user_id != SUPER_ADMIN_ID:
+                try: bot.send_message(SUPER_ADMIN_ID, f"⚠️ Bilinmeyen Komut:\nKullanıcı ID: `{user_id}`\nKomut: `{escaped_text}`", parse_mode="MarkdownV2")
+                except Exception as e: logger.error(f"SUPER_ADMIN'e bilinmeyen komut iletilemedi: {e}")
 
+# --- Webhook ve Flask Ayarları ---
+@app.route(WEBHOOK_URL_PATH, methods=['POST'])
+def webhook_handler_route(): # İsim değişikliği, olası çakışmaları önlemek için
+    if flask.request.headers.get('content-type') == 'application/json':
+        json_string = flask.request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    else: flask.abort(403)
 
-@fastapi_app.get("/health")
-async def health_check():
-    if ptb_application and ptb_application.running: # check ptb_application is initialized
-        return {"status": "ok", "bot_running": True}
-    return {"status": "degraded", "bot_running": False, "message": "PTB application not initialized or not running"}
+@app.route('/')
+def index_route(): logger.info("Ana dizin '/' isteği."); return 'Bot çalışıyor!', 200
+@app.route('/health')
+def health_check_route(): logger.info("Sağlık kontrolü '/health' isteği."); return "OK", 200
 
-
+# --- Bot Başlatma ---
 if __name__ == "__main__":
-    logger.info("Starting Uvicorn server for local development...")
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=PORT)
+    logger.info("Bot başlatılıyor...")
+    if SUPER_ADMIN_ID == 0: # type: ignore
+        logger.critical("ÖNEMLİ: SUPER_ADMIN_ID ayarlanmamış! Lütfen kod içinde bu değeri kendi Telegram ID'niz ile güncelleyin.")
+    if TOKEN == 'YOUR_TELEGRAM_BOT_TOKEN_HERE':
+        logger.critical("ÖNEMLİ: TOKEN ayarlanmamış! Lütfen kod içinde bu değeri kendi bot token'ınız ile güncelleyin veya ortam değişkeni olarak ayarlayın.")
+    load_data() 
+    if WEBHOOK_URL and WEBHOOK_HOST and WEBHOOK_HOST.startswith("https://"):
+        logger.info(f"Webhook modu aktif. URL: {WEBHOOK_URL}")
+        bot.remove_webhook(); time.sleep(0.5)
+        secret = TOKEN[-10:] if TOKEN and len(TOKEN) >= 10 and TOKEN != 'YOUR_TELEGRAM_BOT_TOKEN_HERE' else "DEFAULT_SECRET"
+        bot.set_webhook(url=WEBHOOK_URL, secret_token=secret) 
+        logger.info(f"Flask uygulaması {WEBHOOK_LISTEN}:{WEBHOOK_PORT} adresinde çalışacak.")
+        app.run(host=WEBHOOK_LISTEN, port=WEBHOOK_PORT)
+    else:
+        logger.warning("WEBHOOK_HOST (RENDER_EXTERNAL_URL) ayarlanmamış/hatalı/HTTPS değil veya TOKEN değiştirilmemiş.")
+        logger.info("Polling modunda başlatılıyor...")
+        bot.remove_webhook(); time.sleep(0.1)
+        bot.polling(none_stop=True, interval=1, timeout=40)
