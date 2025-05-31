@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__) # __name__ KULLANILDI
 
 # --- Yapılandırma ---
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or '8128882254:AAEZ_6OicThy8hlo-k4JShBlsatOyqzRhBY' # Token'ınızı buraya girin
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or '8150737858:AAGBk5gcGJNJf2iR1-G7w8vuIaBzM4Ds4mU' # Token'ınızı buraya girin
 bot = telebot.TeleBot(TOKEN, parse_mode=None)
 
 # Webhook ayarları
