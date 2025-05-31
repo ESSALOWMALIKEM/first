@@ -337,7 +337,10 @@ def create_support_request_callback(call):
     if not is_bot_active_for_user(call.from_user.id): bot.answer_callback_query(call.id, "ℹ️ Bot bakımda.", show_alert=True); return
     bot.answer_callback_query(call.id)
     try: bot.delete_message(call.message.chat.id, call.message.message_id)
-    except: pass
+    except telebot.apihelper.ApiTelegramException as e:
+        logger.warning(f"Destek talebi mesajı silinemedi (API): {e}")
+    except Exception as e:
+        logger.error(f"Destek talebi mesajı silinirken genel hata: {e}")
     sent_msg = bot.send_message(call.message.chat.id, "Lütfen sorununuzu veya mesajınızı detaylıca yazın. Mesajınız adminlere iletilecektir.")
     bot.register_next_step_handler(sent_msg, process_user_support_message)
 
@@ -386,8 +389,14 @@ def _set_text_message_prompt(call, text_key_to_set, prompt_identifier_text):
 def _process_set_text_message(message, original_message_id, text_key_to_set):
     if not is_admin_check(message.from_user.id): return
     new_text = message.text # Adminin girdiği ham metin
-    try: bot.delete_message(message.chat.id, message.message_id)
-    except: pass
+    # Sağlamlaştırma: Mesajı silmeye çalışırken hata yakalama
+    if message and message.chat and message.message_id:
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            logger.warning(f"Süreli mesaj silinemedi (API) {_process_set_text_message}: {e}")
+        except Exception as e:
+            logger.error(f"Süreli mesaj silinirken genel hata {_process_set_text_message}: {e}")
+
     if not new_text.strip(): bot.send_message(message.chat.id, "❌ Mesaj boş olamaz. İşlem iptal edildi.")
     else:
         data = load_data()
@@ -422,8 +431,14 @@ def process_alert_users_message_text_only(message, original_message_id): # Sadec
     if not is_admin_check(message.from_user.id): return
     alert_text_content = message.text # Adminin girdiği ham metin
     data = load_data(); users = data.get("users", [])
-    try: bot.delete_message(message.chat.id, message.message_id)
-    except: pass
+    # Sağlamlaştırma: Mesajı silmeye çalışırken hata yakalama
+    if message and message.chat and message.message_id:
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            logger.warning(f"Süreli mesaj silinemedi (API) {process_alert_users_message_text_only}: {e}")
+        except Exception as e:
+            logger.error(f"Süreli mesaj silinirken genel hata {process_alert_users_message_text_only}: {e}")
+
     if not users: bot.send_message(message.chat.id, "ℹ️ Mesaj gönderilecek kullanıcı yok.")
     else:
         status_text = f"📢 {len(users)} kullanıcıya duyuru gönderiliyor..."
@@ -458,7 +473,9 @@ def admin_public_to_channels_callback(call):
     data = load_data(); channels_to_send = data.get("channels", [])
     if not channels_to_send:
         try: bot.edit_message_text("ℹ️ Duyuru yapılacak kanal yok.", call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup())
-        except: pass; return
+        except telebot.apihelper.ApiTelegramException: bot.send_message(call.message.chat.id, "ℹ️ Duyuru yapılacak kanal yok.", reply_markup=get_admin_panel_markup())
+        except Exception as e: logger.error(f"Kanal duyuru yok mesajı gönderilemedi: {e}")
+        return
     announce_text_template = data.get("channel_announcement_text", "*Varsayılan Duyuru*")
     try: bot_username = bot.get_me().username
     except Exception as e: logger.error(f"Bot adı alınamadı: {e}"); bot_username = "BOT_KULLANICI_ADI"
@@ -495,7 +512,12 @@ def admin_view_admins_callback(call): # Bu fonksiyon önceki gibi kalabilir
                 chat = bot.get_chat(admin_id)
                 if chat.first_name: parts.append(f"\\- {escape_markdown_v2(chat.first_name)}")
                 if chat.username: parts.append(f"\\(@{escape_markdown_v2(chat.username)}\\)")
-            except: pass # Detay alınamazsa sorun değil
+            except telebot.apihelper.ApiTelegramException as e:
+                logger.warning(f"Admin detayları alınamadı (API) {admin_id}: {e}")
+                parts.append("\\(Detay alınamadı\\)")
+            except Exception as e:
+                logger.error(f"Admin detayları alınırken genel hata {admin_id}: {e}")
+                parts.append("\\(Detay alınamadı\\)")
             details_list.append(" ".join(parts))
         text_to_send += "\n".join(details_list)
     try: bot.edit_message_text(text_to_send, call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
@@ -520,7 +542,8 @@ def admin_add_channel_prompt_callback(call):
     msg_text = ("➕ Eklenecek kanal\\(lar\\)ın kullanıcı adlarını girin \\(örneğin: `@kanal1 @kanal2`\\)\\. "
                 "Botun kanallarda *yönetici olduğundan* emin olun\\.")
     try: sent_msg = bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
-    except: sent_msg = bot.send_message(call.message.chat.id, msg_text, parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException: sent_msg = bot.send_message(call.message.chat.id, msg_text, parse_mode="MarkdownV2")
+    except Exception as e: logger.error(f"Kanal ekleme prompt'u gönderilemedi: {e}"); return # Hata durumunda çıkış
     bot.register_next_step_handler(sent_msg, process_add_multiple_channels, call.message.message_id)
 
 def process_add_multiple_channels(message, original_message_id):
@@ -539,8 +562,13 @@ def process_add_multiple_channels(message, original_message_id):
     if failed: parts.append(f"❌ Eklenemedi:\n" + "\n".join(failed))
     if exists: parts.append(f"ℹ️ Zaten Var:\n" + "\n".join(map(escape_markdown_v2,exists)))
     response = "\n\n".join(parts) if parts else "İşlem yapılacak kanal bulunamadı."
-    try: bot.delete_message(message.chat.id, message.message_id)
-    except: pass
+    # Sağlamlaştırma: Mesajı silmeye çalışırken hata yakalama
+    if message and message.chat and message.message_id:
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            logger.warning(f"Süreli mesaj silinemedi (API) {process_add_multiple_channels}: {e}")
+        except Exception as e:
+            logger.error(f"Süreli mesaj silinirken genel hata {process_add_multiple_channels}: {e}")
     bot.send_message(message.chat.id, response, parse_mode="MarkdownV2")
     admin_panel_back_for_next_step(message.chat.id, original_message_id)
 
@@ -550,12 +578,15 @@ def admin_delete_channel_prompt_callback(call):
     bot.answer_callback_query(call.id); data = load_data(); channels = data.get("channels", [])
     if not channels:
         try: bot.edit_message_text("➖ Silinecek kanal yok.", call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup())
-        except: pass; return
+        except telebot.apihelper.ApiTelegramException: bot.send_message(call.message.chat.id, "➖ Silinecek kanal yok.", reply_markup=get_admin_panel_markup())
+        except Exception as e: logger.error(f"Kanal silme yok mesajı gönderilemedi: {e}")
+        return
     markup = types.InlineKeyboardMarkup(row_width=1)
     for ch in channels: markup.add(types.InlineKeyboardButton(f"🗑️ Sil: {escape_markdown_v2(ch)}", callback_data=f"admin_del_ch_confirm:{ch}"))
     markup.add(types.InlineKeyboardButton("↩️ Geri", callback_data="admin_panel_back"))
     try: bot.edit_message_text("➖ Silinecek kanalı seçin:", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="MarkdownV2")
-    except: pass
+    except telebot.apihelper.ApiTelegramException: bot.send_message(call.message.chat.id, "➖ Silinecek kanalı seçin:", reply_markup=markup, parse_mode="MarkdownV2")
+    except Exception as e: logger.error(f"Kanal silme prompt'u gönderilemedi: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_del_ch_confirm:"))
 def admin_delete_channel_confirm_callback(call):
@@ -571,14 +602,30 @@ def admin_change_vpn_prompt_callback(call):
     bot.answer_callback_query(call.id); data = load_data(); current_code = data.get("success_message", "KOD: ")
     msg_text = (f"🔑 Yeni VPN kodunu girin\\. Mevcut:\n`{escape_markdown_v2(current_code)}`\nMarkdown kullanabilirsiniz\\.")
     try: sent_msg = bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
-    except: sent_msg = bot.send_message(call.message.chat.id, msg_text, parse_mode="MarkdownV2")
+    except telebot.apihelper.ApiTelegramException: sent_msg = bot.send_message(call.message.chat.id, msg_text, parse_mode="MarkdownV2")
+    except Exception as e: logger.error(f"VPN kodu değiştirme prompt'u gönderilemedi: {e}"); return # Hata durumunda çıkış
     bot.register_next_step_handler(sent_msg, process_change_vpn_code, call.message.message_id)
 
 def process_change_vpn_code(message, original_message_id): 
     if not is_admin_check(message.from_user.id): return
-    new_code = message.text; try: bot.delete_message(message.chat.id, message.message_id); except: pass
-    if not new_code.strip(): bot.send_message(message.chat.id, "❌ Kod boş olamaz.")
-    else: data = load_data(); data["success_message"] = new_code; save_data(data); bot.send_message(message.chat.id, "✅ VPN kodu güncellendi.")
+    new_code = message.text
+    # Hata yakalamayı daha spesifik hale getirdim
+    if message and message.chat and message.message_id:
+        try: 
+            bot.delete_message(message.chat.id, message.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            logger.warning(f"VPN kodu değiştirme işleminde mesaj silinemedi (API): {e}")
+        except Exception as e:
+            logger.error(f"VPN kodu değiştirme işleminde mesaj silinirken genel hata: {e}")
+    
+    if not new_code.strip(): 
+        bot.send_message(message.chat.id, "❌ Kod boş olamaz.")
+    else: 
+        data = load_data()
+        data["success_message"] = new_code
+        save_data(data)
+        bot.send_message(message.chat.id, "✅ VPN kodu güncellendi.")
+    
     admin_panel_back_for_next_step(message.chat.id, original_message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_stats")
@@ -597,13 +644,19 @@ def admin_add_admin_prompt_callback(call):
     if not is_super_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "⛔ Sadece Süper Admin.", show_alert=True)
     bot.answer_callback_query(call.id); msg_text = "➕ Admin yapılacak kullanıcının Telegram ID'sini girin:"
     try: sent_msg = bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id)
-    except: sent_msg = bot.send_message(call.message.chat.id, msg_text)
+    except telebot.apihelper.ApiTelegramException: sent_msg = bot.send_message(call.message.chat.id, msg_text)
+    except Exception as e: logger.error(f"Admin ekleme prompt'u gönderilemedi: {e}"); return # Hata durumunda çıkış
     bot.register_next_step_handler(sent_msg, process_add_admin_id, call.message.message_id)
 
 def process_add_admin_id(message, original_message_id):
     if not is_super_admin_check(message.from_user.id): return
-    try: bot.delete_message(message.chat.id, message.message_id)
-    except: pass
+    # Sağlamlaştırma: Mesajı silmeye çalışırken hata yakalama
+    if message and message.chat and message.message_id:
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            logger.warning(f"Süreli mesaj silinemedi (API) {process_add_admin_id}: {e}")
+        except Exception as e:
+            logger.error(f"Süreli mesaj silinirken genel hata {process_add_admin_id}: {e}")
     try: new_admin_id = int(message.text.strip())
     except ValueError: bot.send_message(message.chat.id, "❌ Geçersiz ID."); admin_panel_back_for_next_step(message.chat.id, original_message_id); return
     data = load_data()
@@ -617,18 +670,21 @@ def admin_remove_admin_prompt_callback(call):
     bot.answer_callback_query(call.id); data = load_data(); admins_to_list = [aid for aid in data.get("admins", []) if aid != SUPER_ADMIN_ID]
     if not admins_to_list:
         try: bot.edit_message_text("➖ Silinecek başka admin yok.", call.message.chat.id, call.message.message_id, reply_markup=get_admin_panel_markup())
-        except: pass; return
+        except telebot.apihelper.ApiTelegramException: bot.send_message(call.message.chat.id, "➖ Silinecek başka admin yok.", reply_markup=get_admin_panel_markup())
+        except Exception as e: logger.error(f"Admin silme yok mesajı gönderilemedi: {e}")
+        return
     markup = types.InlineKeyboardMarkup(row_width=1)
     for aid in admins_to_list: markup.add(types.InlineKeyboardButton(f"🗑️ Sil: {aid}", callback_data=f"admin_rem_adm_confirm:{aid}"))
     markup.add(types.InlineKeyboardButton("↩️ Geri", callback_data="admin_panel_back"))
     try: bot.edit_message_text("➖ Silinecek admini seçin:", call.message.chat.id, call.message.message_id, reply_markup=markup)
-    except: pass
+    except telebot.apihelper.ApiTelegramException: bot.send_message(call.message.chat.id, "➖ Silinecek admini seçin:", reply_markup=markup)
+    except Exception as e: logger.error(f"Admin silme prompt'u gönderilemedi: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_rem_adm_confirm:"))
 def admin_remove_admin_confirm_callback(call):
     if not is_super_admin_check(call.from_user.id): return bot.answer_callback_query(call.id, "⛔ Sadece Süper Admin.", show_alert=True)
     try: admin_id_to_remove = int(call.data.split(":", 1)[1])
-    except: bot.answer_callback_query(call.id, "Geçersiz veri.", show_alert=True); admin_remove_admin_prompt_callback(call); return
+    except ValueError: bot.answer_callback_query(call.id, "Geçersiz veri.", show_alert=True); admin_remove_admin_prompt_callback(call); return
     data = load_data()
     if admin_id_to_remove == SUPER_ADMIN_ID: bot.answer_callback_query(call.id, "⛔ Süper Admin silinemez.", show_alert=True)
     elif admin_id_to_remove in data.get("admins", []): data["admins"].remove(admin_id_to_remove); save_data(data); bot.answer_callback_query(call.id, f"✅ Admin {admin_id_to_remove} silindi.")
@@ -640,6 +696,8 @@ def admin_panel_back_for_next_step(chat_id, original_message_id):
     except telebot.apihelper.ApiTelegramException as e:
         logger.warning(f"Next_step sonrası panel düzenlenemedi (ID: {original_message_id}): {e}")
         bot.send_message(chat_id, "🤖 *Admin Paneli*\nLütfen bir işlem seçin:", reply_markup=get_admin_panel_markup(), parse_mode="MarkdownV2")
+    except Exception as e:
+        logger.error(f"Next_step sonrası admin paneline dönerken genel hata: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_panel_back")
 def admin_panel_back_callback(call):
