@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__) # __name__ KULLANILDI
 
 # --- Yapılandırma ---
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or 'YOUR_TELEGRAM_BOT_TOKEN_HERE' # Token'ınızı buraya girin
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or '7856912713:AAHs1OQ4N5bQ-qCEdBhd_wl-mfOBEGCW66U' # Token'ınızı buraya girin
 bot = telebot.TeleBot(TOKEN, parse_mode=None)
 
 # Webhook ayarları
@@ -27,7 +27,7 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_URL_PATH}" if WEBHOOK_HOST else None
 app = flask.Flask(__name__) # __name__ KULLANILDI
 
 # --- Sabitler ve Veri Dosyası ---
-SUPER_ADMIN_ID = 0 # KENDİ TELEGRAM ID'NİZİ GİRİN! (ÇOK ÖNEMLİ)
+SUPER_ADMIN_ID = 7877979174 # KENDİ TELEGRAM ID'NİZİ GİRİN! (ÇOK ÖNEMLİ)
 DATA_FILE = 'channels.dat'
 
 # Callback data sabitleri (basitleştirilmiş)
