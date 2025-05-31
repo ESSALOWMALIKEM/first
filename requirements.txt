@@ -2,3 +2,4 @@ TelegramAPI
 python-telegram-bot
 gunicorn
 flask
+telebot
