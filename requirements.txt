@@ -1,5 +1,4 @@
-python-telegram-bot[ext]>=20.0  # Or the latest 20.x or 21.x version
-fastapi>=0.90.0                 # Or latest
-uvicorn[standard]>=0.20.0       # Or latest
-# httpx is usually a dependency of PTB or FastAPI, but explicit can be good
-httpx>=0.23.0
+TelegramAPI
+python-telegram-bot
+gunicorn
+flask
