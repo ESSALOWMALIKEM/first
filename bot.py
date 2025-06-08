@@ -18,9 +18,9 @@ import io
 logging.basicConfig(level=logging.INFO)
 
 # --- BOTUNUZUN BİLGİLERİNİ GİRİN ---
-API_TOKEN = '7399222144:AAE0GP4T-ayz42nlOxDB6xmHLxPMkOePrgY' # BOT TOKEN'İNİZİ BURAYA YAZIN
-SUPER_ADMIN_ID = 7853333670 # KENDİ TELEGRAM ID'NİZİ BURAYA YAZIN
-DATABASE_URL = "postgresql://htsd_user:csKusK0S8l0l5yXnn6TJZtPaNN9qUGIQ@dpg-d0m6hap5pdvs738v8fq0-a/htsd" # VERİTABANI BAĞLANTI ADRESİNİZ
+API_TOKEN = '7790968356:AAGYEPi9cpgovtWmuzV98GYXjRAorWOIsGQ' # BOT TOKEN'İNİZİ BURAYA YAZIN
+SUPER_ADMIN_ID = 7877979174 # KENDİ TELEGRAM ID'NİZİ BURAYA YAZIN
+DATABASE_URL = "postgresql://htsd_user:NdJwX21r3kuJDcUNZasIGf4M55wHJSXB@dpg-d12im26mcj7s73fd8aug-a/htsd_fxdx" # VERİTABANI BAĞLANTI ADRESİNİZ
 # ------------------------------------
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
