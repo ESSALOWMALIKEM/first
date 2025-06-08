@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 API_TOKEN = '7790968356:AAGYEPi9cpgovtWmuzV98GYXjRAorWOIsGQ'
 SUPER_ADMIN_ID = 7877979174
 
-DATABASE_URL = "postgresql://htsd_user:HaaEylfoHzuyfZ8afqQBdcVGGAatiout@dpg-d12gv395pdvs73cnqt40-a/htsd_q8g6"
+DATABASE_URL = "postgresql://htsd_user:NdJwX21r3kuJDcUNZasIGf4M55wHJSXB@dpg-d12im26mcj7s73fd8aug-a/htsd_fxdx"
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 storage = MemoryStorage()
