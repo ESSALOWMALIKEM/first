@@ -13,6 +13,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from keep_alive import keep_alive
+
+keep_alive()
 
 logging.basicConfig(level=logging.INFO)
 
