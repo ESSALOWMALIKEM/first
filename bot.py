@@ -152,18 +152,92 @@ async def send_mail_preview(chat_id: int, content: dict, keyboard: InlineKeyboar
     text = content.get('text')
     file_id = content.get('file_id')
 
-    if content_type == 'text':
-        return await bot.send_message(chat_id, text, reply_markup=keyboard)
-    elif content_type == 'photo':
-        return await bot.send_photo(chat_id, file_id, caption=caption, reply_markup=keyboard)
-    elif content_type == 'video':
-        return await bot.send_video(chat_id, file_id, caption=caption, reply_markup=keyboard)
-    elif content_type == 'animation':
-        return await bot.send_animation(chat_id, file_id, caption=caption, reply_markup=keyboard)
-    elif content_type == 'document':
-        return await bot.send_document(chat_id, file_id, caption=caption, reply_markup=keyboard)
+    try:
+        if content_type == 'text':
+            return await bot.send_message(chat_id, text, reply_markup=keyboard)
+        elif content_type == 'photo':
+            return await bot.send_photo(chat_id, photo=file_id, caption=caption or '', reply_markup=keyboard)
+        elif content_type == 'video':
+            return await bot.send_video(chat_id, video=file_id, caption=caption or '', reply_markup=keyboard)
+        elif content_type == 'animation':
+            return await bot.send_animation(chat_id, animation=file_id, caption=caption or '', reply_markup=keyboard)
+        elif content_type == 'document':
+            return await bot.send_document(chat_id, document=file_id, caption=caption or '', reply_markup=keyboard)
+        else:
+            return await bot.send_message(chat_id, "⚠️ Format tanınmadı. Mesaj gönderilemedi.")
+    except Exception as e:
+        return await bot.send_message(chat_id, f"⚠️ Gönderim hatası: {e}")
+
+
+async def process_mailing_content(message: Message, state: FSMContext, mail_type: str):
+    """
+    Adminin gönderdiği medya ya da mesajı algılar ve mailing verisine dönüştürür.
+    HTML desteklidir. Her medya tipini kapsar.
+    """
+    content = {}
+
+    if message.photo:
+        content = {
+            'type': 'photo',
+            'file_id': message.photo[-1].file_id,
+            'caption': message.caption or ''
+        }
+    elif message.video:
+        content = {
+            'type': 'video',
+            'file_id': message.video.file_id,
+            'caption': message.caption or ''
+        }
+    elif message.animation:
+        content = {
+            'type': 'animation',
+            'file_id': message.animation.file_id,
+            'caption': message.caption or ''
+        }
+    elif message.document:
+        content = {
+            'type': 'document',
+            'file_id': message.document.file_id,
+            'caption': message.caption or ''
+        }
+    elif message.text:
+        content = {
+            'type': 'text',
+            'text': message.html_text
+        }
     else:
-        return await bot.send_message(chat_id, "⚠️ Format tanınmadı. Mesaj gönderilemedi.")
+        await message.answer("⚠️ Bu habar görnüşi goldanmaýar. Tekst, surat, wideo, GIF ýa-da faýl iberiň.")
+        return
+
+    await state.update_data(mailing_content=content)
+
+    fsm_data = await state.get_data()
+    admin_message_id = fsm_data.get('admin_message_id')
+    admin_chat_id = message.chat.id
+
+    try:
+        await bot.delete_message(admin_chat_id, admin_message_id)
+    except (TelegramBadRequest, AttributeError):
+        pass
+
+    preview_text = "🗂️ <b>Öňünden tassyklaň:</b>\n\nHabaryňyz aşakdaky ýaly bolar. Iberýärismi?"
+
+    preview_message = await send_mail_preview(admin_chat_id, content)
+
+    confirmation_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Düwmesiz ibermek", callback_data=f"{mail_type}_mail_confirm_send")],
+        [InlineKeyboardButton(text="➕ Düwmeleri goşmak", callback_data=f"{mail_type}_mail_confirm_add_buttons")],
+        [InlineKeyboardButton(text="⬅️ Ýatyr", callback_data="admin_panel_main")]
+    ])
+    confirm_msg = await bot.send_message(admin_chat_id, preview_text, reply_markup=confirmation_keyboard)
+
+    await state.update_data(admin_message_id=confirm_msg.message_id, preview_message_id=preview_message.message_id)
+
+    if mail_type == "user":
+        await state.set_state(AdminStates.waiting_for_mailing_confirmation)
+    else:
+        await state.set_state(AdminStates.waiting_for_channel_mailing_confirmation)
+
 
 
 async def process_mailing_content(message: Message, state: FSMContext, mail_type: str):
