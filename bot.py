@@ -251,7 +251,8 @@ async def process_mailing_content(message: Message, state: FSMContext, mail_type
         content = {
             'type': 'photo',
             'file_id': message.photo[-1].file_id,
-            'caption': message.caption
+            'caption': message.caption,
+            'text': message.html_text
         }
     elif message.video:
         content = {
