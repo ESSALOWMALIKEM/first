@@ -735,7 +735,7 @@ async def process_channel_mailing_buttons(message: Message, state: FSMContext):
     await execute_channel_broadcast(msg_for_broadcast, mailing_content, keyboard)
     await state.clear()
 
-# --- CHANNEL MANAGEMENT (GÜNCELLENDİ: Çoklu kanal ekleme ve otomatik isim alma) ---
+# --- CHANNEL MANAGEMENT (GÜNCELLENDİ: Çoklu kanal ekleme) ---
 @router.callback_query(lambda c: c.data == "add_channel")
 async def process_add_channel_prompt(callback: types.CallbackQuery, state: FSMContext):
     if not await is_user_admin_in_db(callback.from_user.id):
@@ -774,9 +774,7 @@ async def process_channel_id_and_save(message: types.Message, state: FSMContext)
 
     for channel_id_input in channel_inputs:
         try:
-            # Bu satır hem @username hem de ID ile kanal bilgilerini çeker
             chat_obj = await bot.get_chat(channel_id_input)
-            # Bu satır kanalın resmi adını alır
             channel_name = chat_obj.title
             
             bot_member = await bot.get_chat_member(chat_id=chat_obj.id, user_id=bot.id)
