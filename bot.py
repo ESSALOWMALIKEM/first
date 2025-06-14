@@ -304,10 +304,10 @@ async def get_unsubscribed_channels(user_id: int) -> list:
 def create_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 Bot statistikasy", callback_data="get_stats")],
-        [InlineKeyboardButton(text="🚀 Ulanyjylara ibermek", callback_data="start_mailing"),
-         InlineKeyboardButton(text="📢 Kanallara ibermek", callback_data="start_channel_mailing")],
+        [InlineKeyboardButton(text="🚀 Ulanyjylara bildiriş ibermek", callback_data="start_mailing"),
+         InlineKeyboardButton(text="📢 Kanallara bildiriş ibermek", callback_data="start_channel_mailing")],
         [InlineKeyboardButton(text="➕ Kanal goşmak", callback_data="add_channel"), InlineKeyboardButton(text="➖ Kanal pozmak", callback_data="delete_channel")],
-        [InlineKeyboardButton(text="📜 Kanallary Listele", callback_data="list_channels")],
+        [InlineKeyboardButton(text="📜 Kanallary görmek", callback_data="list_channels")],
         [InlineKeyboardButton(text="📁 addlist goşmak", callback_data="add_addlist"), InlineKeyboardButton(text="🗑️ addlist pozmak", callback_data="delete_addlist")],
         [InlineKeyboardButton(text="🔑 VPN goşmak", callback_data="add_vpn_config"), InlineKeyboardButton(text="🗑️ VPN pozmak", callback_data="delete_vpn_config")],
         [InlineKeyboardButton(text="✏️ Başlangyç haty üýtgetmek", callback_data="change_welcome")]
@@ -315,7 +315,7 @@ def create_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
     if user_id == SUPER_ADMIN_ID:
         buttons.extend([
             [InlineKeyboardButton(text="👮 Admin goşmak", callback_data="add_admin"), InlineKeyboardButton(text="🚫 Admin pozmak", callback_data="delete_admin")],
-            [InlineKeyboardButton(text="👮 Adminleri Listele", callback_data="list_admins")]
+            [InlineKeyboardButton(text="👮 Adminleri görmek", callback_data="list_admins")]
         ])
     buttons.append([InlineKeyboardButton(text="⬅️ Admin panelden çykmak", callback_data="exit_admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -337,9 +337,9 @@ async def start_command(message: types.Message, state: FSMContext):
 
     if not unsubscribed_channels and not addlists:
         vpn_config_text = random.choice(vpn_configs)['config_text']
-        text = "🎉 Siz ähli talap edilýän bellikleri ýerine ýetirdiňiz!"
+        text = "🎉 Siz ähli kanallara agza bolduňyz!"
         await message.answer(
-            f"{text}\n\n🔑 <b>siziň VPN Kodyňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>"
+            f"{text}\n\n🔑 <b>VPN Kodyňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>"
         )
     else:
         welcome_text = await get_setting_from_db('welcome_message', "👋 <b>Hoş geldiňiz!</b>")
@@ -347,13 +347,13 @@ async def start_command(message: types.Message, state: FSMContext):
         tasks_text_list = []
         keyboard_buttons = []
         
-        for channel in unsubscribed_channels:
-            tasks_text_list.append(f"▫️ <a href=\"https://t.me/{str(channel['id']).lstrip('@')}\">{channel['name']}</a>")
-            keyboard_buttons.append([InlineKeyboardButton(text=f"{channel['name']}", url=f"https://t.me/{str(channel['id']).lstrip('@')}")])
+        # for channel in unsubscribed_channels:
+        #     tasks_text_list.append(f"▫️ <a href=\"https://t.me/{str(channel['id']).lstrip('@')}\">{channel['name']}</a>")
+        #     keyboard_buttons.append([InlineKeyboardButton(text=f"{channel['name']}", url=f"https://t.me/{str(channel['id']).lstrip('@')}")])
 
-        for addlist in addlists:
-            tasks_text_list.append(f"▫️ <a href=\"{addlist['url']}\">{addlist['name']}</a>")
-            keyboard_buttons.append([InlineKeyboardButton(text=f"{addlist['name']}", url=addlist['url'])])
+        # for addlist in addlists:
+        #     tasks_text_list.append(f"▫️ <a href=\"{addlist['url']}\">{addlist['name']}</a>")
+        #     keyboard_buttons.append([InlineKeyboardButton(text=f"{addlist['name']}", url=addlist['url'])])
         
         if tasks_text_list:
             full_message = welcome_text + "\n\nVPN koduny almak üçin şu ýerlere agza boluň:\n\n" + "\n".join(tasks_text_list)
@@ -439,7 +439,7 @@ async def start_chat_with_user(callback: types.CallbackQuery, state: FSMContext)
                 admin_name = admin_info.full_name
             except Exception:
                 admin_name = f"ID {active_admin_id}"
-            await callback.answer(f"⚠️ Bu ulanyja eýýäm başga bir admin ({admin_name}) kömek edýär.", show_alert=True)
+            await callback.answer(f"⚠️ Bu ulanyja eýýäm ({admin_name}) kömek edýär.", show_alert=True)
         return
     
     # Söhbetdeşligi "eýele"
@@ -518,7 +518,7 @@ async def forward_chat_message(message: Message, state: FSMContext):
     partner_id = data.get('chat_partner_id')
 
     if not partner_id:
-        await message.answer("⚠️ Hata: Söhbet partneri tapylmady. Söhbeti gutarmak üçin /end ýazyň.")
+        await message.answer("⚠️ Ýalňyşlyk: Söhbet partneri tapylmady. Söhbeti gutarmak üçin /end ýazyň.")
         return
 
     sender = message.from_user
@@ -601,7 +601,7 @@ async def get_statistics(callback: types.CallbackQuery):
                   f"📢 Kanallar: {channel_count}\n"
                   f"📁 addlistlar: {addlist_count}\n"
                   f"🔑 VPN Kodlary: {vpn_count}\n"
-                  f"👮 Adminler (goşm.): {admin_count}\n"
+                  f"👮 Adminler (goşulan): {admin_count}\n"
                   f"⚙️ Ýagdaýy: {status_description}")
     await callback.answer(text=alert_text, show_alert=True)
 
@@ -702,7 +702,7 @@ async def process_user_mailing_confirmation(callback: types.CallbackQuery, state
         await execute_user_broadcast(msg_for_broadcast, mailing_content, mailing_keyboard)
         await state.clear()
     elif callback.data == "user_mail_confirm_add_buttons":
-        msg = await bot.send_message(callback.from_user.id, "🔗 <b>Düwmeleri goşmak</b> 🔗\n\nFormat: <code>Tekst - https://salgy.com</code>\nHer düwme täze setirde.", reply_markup=back_to_admin_markup)
+        msg = await bot.send_message(callback.from_user.id, "🔗 <b>Düwmeleri goşmak</b> 🔗\n\nFormat: <code>Tekst - https://deezer.com</code>\nHer düwme täze setirde.", reply_markup=back_to_admin_markup)
         await state.update_data(admin_message_id=msg.message_id)
         await state.set_state(AdminStates.waiting_for_mailing_buttons)
     await callback.answer()
