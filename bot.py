@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 # --- CONFIGURATION ---
 API_TOKEN = '7790968356:AAGYEPi9cpgovtWmuzV98GYXjRAorWOIsGQ'
 SUPER_ADMIN_ID = 7877979174
-DATABASE_URL = "postgresql://htsd_user:HaaEylfoHzuyfZ8afqQBdcVGGAatiout@dpg-d12gv395pdvs73cnqt40-a/htsd_q8g6"
+upDATABASE_URL = "postgresql://htsd_user:HaaEylfoHzuyfZ8afqQBdcVGGAatiout@dpg-d12gv395pdvs73cnqt40-a/htsd_q8g6"
 # --- END CONFIGURATION ---
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
@@ -347,13 +347,13 @@ async def start_command(message: types.Message, state: FSMContext):
         tasks_text_list = []
         keyboard_buttons = []
         
-        # for channel in unsubscribed_channels:
-        #     tasks_text_list.append(f"▫️ <a href=\"https://t.me/{str(channel['id']).lstrip('@')}\">{channel['name']}</a>")
-        #     keyboard_buttons.append([InlineKeyboardButton(text=f"{channel['name']}", url=f"https://t.me/{str(channel['id']).lstrip('@')}")])
+         for channel in unsubscribed_channels:
+             tasks_text_list.append(f"▫️ <a href=\"https://t.me/{str(channel['id']).lstrip('@')}\">{channel['name']}</a>")
+             keyboard_buttons.append([InlineKeyboardButton(text=f"{channel['name']}", url=f"https://t.me/{str(channel['id']).lstrip('@')}")])
 
-        # for addlist in addlists:
-        #     tasks_text_list.append(f"▫️ <a href=\"{addlist['url']}\">{addlist['name']}</a>")
-        #     keyboard_buttons.append([InlineKeyboardButton(text=f"{addlist['name']}", url=addlist['url'])])
+         for addlist in addlists:
+             tasks_text_list.append(f"▫️ <a href=\"{addlist['url']}\">{addlist['name']}</a>")
+             keyboard_buttons.append([InlineKeyboardButton(text=f"{addlist['name']}", url=addlist['url'])])
         
         if tasks_text_list:
             full_message = welcome_text + "\n\nVPN koduny almak üçin şu ýerlere agza boluň:\n\n" + "\n".join(tasks_text_list)
