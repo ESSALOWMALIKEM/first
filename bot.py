@@ -1,13 +1,13 @@
 import asyncio
 import logging
 import random
-import json 
+import json
 from urllib.parse import quote, unquote
 import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, Chat
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -19,11 +19,11 @@ keep_alive()
 
 logging.basicConfig(level=logging.INFO)
 
+# --- CONFIGURATION ---
 API_TOKEN = '7790968356:AAGYEPi9cpgovtWmuzV98GYXjRAorWOIsGQ'
 SUPER_ADMIN_ID = 7877979174
-
 DATABASE_URL = "postgresql://htsd_user:NdJwX21r3kuJDcUNZasIGf4M55wHJSXB@dpg-d12im26mcj7s73fd8aug-a/htsd_fxdx"
-
+# --- END CONFIGURATION ---
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 storage = MemoryStorage()
@@ -40,9 +40,13 @@ back_to_admin_markup = InlineKeyboardMarkup(inline_keyboard=[
 class SubscriptionStates(StatesGroup):
     checking_subscription = State()
 
+# --- YENİ EKLENEN DURUMLAR ---
+class HelpStates(StatesGroup):
+    waiting_for_help_message = State()
+    waiting_for_admin_reply = State()
+
 class AdminStates(StatesGroup):
     waiting_for_channel_id = State()
-    waiting_for_channel_name = State()
     waiting_for_channel_to_delete = State()
     waiting_for_vpn_config = State()
     waiting_for_vpn_config_to_delete = State()
@@ -51,53 +55,37 @@ class AdminStates(StatesGroup):
     waiting_for_mailing_message = State()
     waiting_for_mailing_confirmation = State()
     waiting_for_mailing_buttons = State()
-    waiting_for_channel_mail_action = State() 
+    waiting_for_channel_mail_action = State()
     waiting_for_channel_mailing_message = State()
     waiting_for_channel_mailing_confirmation = State()
     waiting_for_channel_mailing_buttons = State()
     waiting_for_admin_id_to_add = State()
     waiting_for_addlist_url = State()
     waiting_for_addlist_name = State()
+    # YENİ EKLENDİ: Kullanıcıya yardım yanıtı gönderme durumu
+    waiting_for_reply_to_user = State()
 
 async def init_db(pool):
     async with pool.acquire() as connection:
         await connection.execute("""
-            CREATE TABLE IF NOT EXISTS bot_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            );
+            CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT);
         """)
         await connection.execute("""
-            CREATE TABLE IF NOT EXISTS channels (
-                id SERIAL PRIMARY KEY,
-                channel_id TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL
-            );
+            CREATE TABLE IF NOT EXISTS channels (id SERIAL PRIMARY KEY, channel_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL);
         """)
         await connection.execute("""
-            CREATE TABLE IF NOT EXISTS addlists (
-                id SERIAL PRIMARY KEY,
-                name TEXT NOT NULL,
-                url TEXT UNIQUE NOT NULL
-            );
+            CREATE TABLE IF NOT EXISTS addlists (id SERIAL PRIMARY KEY, name TEXT NOT NULL, url TEXT UNIQUE NOT NULL);
         """)
         await connection.execute("""
-            CREATE TABLE IF NOT EXISTS vpn_configs (
-                id SERIAL PRIMARY KEY,
-                config_text TEXT UNIQUE NOT NULL
-            );
+            CREATE TABLE IF NOT EXISTS vpn_configs (id SERIAL PRIMARY KEY, config_text TEXT UNIQUE NOT NULL);
         """)
         await connection.execute("""
-            CREATE TABLE IF NOT EXISTS bot_users (
-                user_id BIGINT PRIMARY KEY
-            );
+            CREATE TABLE IF NOT EXISTS bot_users (user_id BIGINT PRIMARY KEY);
         """)
         await connection.execute("""
-            CREATE TABLE IF NOT EXISTS bot_admins (
-                user_id BIGINT PRIMARY KEY
-            );
+            CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY);
         """)
-        default_welcome = "👋 <b>Hoş geldiňiz!</b>\n\nVPN Koduny almak üçin, aşakdaky Kanallara Agza boluň we soňra Agza boldum düwmesine basyň."
+        default_welcome = "👋 <b>Hoş geldiňiz!</b>\n\nVPN Koduny almak üçin, aşakdaky Kanallara Agza boluň we soňra '✅ Agza Boldum' düwmesine basyň."
         await connection.execute(
             "INSERT INTO bot_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
             'welcome_message', default_welcome
@@ -116,37 +104,27 @@ async def save_setting_to_db(key: str, value: str):
         )
 
 async def save_last_mail_content(content: dict, keyboard: InlineKeyboardMarkup | None, mail_type: str):
-    """Сохраняет контент и клавиатуру последней рассылки."""
     content_json = json.dumps(content)
     await save_setting_to_db(f'last_{mail_type}_mail_content', content_json)
-    
     if keyboard:
-        keyboard_json = json.dumps(keyboard.dict())
+        keyboard_json = json.dumps(keyboard.to_python())
         await save_setting_to_db(f'last_{mail_type}_mail_keyboard', keyboard_json)
     else:
         await save_setting_to_db(f'last_{mail_type}_mail_keyboard', 'null')
 
 async def get_last_mail_content(mail_type: str) -> tuple[dict | None, InlineKeyboardMarkup | None]:
-    """Загружает контент и клавиатуру последней рассылки."""
-    content = None
-    keyboard = None
-    
+    content, keyboard = None, None
     content_json = await get_setting_from_db(f'last_{mail_type}_mail_content')
     if content_json:
         content = json.loads(content_json)
-        
     keyboard_json = await get_setting_from_db(f'last_{mail_type}_mail_keyboard')
     if keyboard_json and keyboard_json != 'null':
         keyboard_data = json.loads(keyboard_json)
         keyboard = InlineKeyboardMarkup.model_validate(keyboard_data)
-        
     return content, keyboard
 
+# GÜNCELLENDİ: Daha fazla dosya türünü desteklemek için (audio, voice)
 async def send_mail_preview(chat_id: int, content: dict, keyboard: InlineKeyboardMarkup | None = None):
-    """
-    Kullanıcıya gönderilecek içeriği önizleme olarak yollar (text, foto, video, gif, dosya destekli).
-    HTML formatı aktiftir.
-    """
     content_type = content.get('type')
     caption = content.get('caption')
     text = content.get('text')
@@ -163,65 +141,51 @@ async def send_mail_preview(chat_id: int, content: dict, keyboard: InlineKeyboar
             return await bot.send_animation(chat_id, animation=file_id, caption=caption or '', reply_markup=keyboard)
         elif content_type == 'document':
             return await bot.send_document(chat_id, document=file_id, caption=caption or '', reply_markup=keyboard)
+        elif content_type == 'audio': # YENİ EKLENDİ
+            return await bot.send_audio(chat_id, audio=file_id, caption=caption or '', reply_markup=keyboard)
+        elif content_type == 'voice': # YENİ EKLENDİ
+            return await bot.send_voice(chat_id, voice=file_id, caption=caption or '', reply_markup=keyboard)
         else:
             return await bot.send_message(chat_id, "⚠️ Format tanınmadı. Mesaj gönderilemedi.")
     except Exception as e:
+        logging.error(f"Error sending mail preview to {chat_id}: {e}")
         return await bot.send_message(chat_id, f"⚠️ Gönderim hatası: {e}")
 
-
+# GÜNCELLENDİ: Daha fazla dosya türünü desteklemek için (audio, voice)
 async def process_mailing_content(message: Message, state: FSMContext, mail_type: str):
-    """
-    Adminin gönderdiği medya ya da mesajı algılar ve mailing verisine dönüştürür.
-    HTML desteklidir. Her medya tipini kapsar.
-    """
     content = {}
-
+    # NOT: `message.caption_html` kullanımı, resim+metin gönderimlerinde HTML'i zaten desteklemektedir.
     if message.photo:
-        content = {
-            'type': 'photo',
-            'file_id': message.photo[-1].file_id,
-            'caption': message.caption or ''
-        }
+        content = {'type': 'photo', 'file_id': message.photo[-1].file_id, 'caption': message.caption_html}
     elif message.video:
-        content = {
-            'type': 'video',
-            'file_id': message.video.file_id,
-            'caption': message.caption or ''
-        }
+        content = {'type': 'video', 'file_id': message.video.file_id, 'caption': message.caption_html}
     elif message.animation:
-        content = {
-            'type': 'animation',
-            'file_id': message.animation.file_id,
-            'caption': message.caption or ''
-        }
+        content = {'type': 'animation', 'file_id': message.animation.file_id, 'caption': message.caption_html}
     elif message.document:
-        content = {
-            'type': 'document',
-            'file_id': message.document.file_id,
-            'caption': message.caption or ''
-        }
+        content = {'type': 'document', 'file_id': message.document.file_id, 'caption': message.caption_html}
+    elif message.audio: # YENİ EKLENDİ
+        content = {'type': 'audio', 'file_id': message.audio.file_id, 'caption': message.caption_html}
+    elif message.voice: # YENİ EKLENDİ
+        content = {'type': 'voice', 'file_id': message.voice.file_id, 'caption': message.caption_html}
     elif message.text:
-        content = {
-            'type': 'text',
-            'text': message.html_text
-        }
+        content = {'type': 'text', 'text': message.html_text}
     else:
-        await message.answer("⚠️ Bu habar görnüşi goldanmaýar. Tekst, surat, wideo, GIF ýa-da faýl iberiň.")
+        await message.answer("⚠️ Bu habar görnüşi goldanmaýar. Tekst, surat, wideo, GIF, ses ýa-da faýl iberiň.")
         return
 
     await state.update_data(mailing_content=content)
-
+    
     fsm_data = await state.get_data()
     admin_message_id = fsm_data.get('admin_message_id')
     admin_chat_id = message.chat.id
 
     try:
-        await bot.delete_message(admin_chat_id, admin_message_id)
+        if admin_message_id:
+            await bot.delete_message(admin_chat_id, admin_message_id)
     except (TelegramBadRequest, AttributeError):
         pass
 
     preview_text = "🗂️ <b>Öňünden tassyklaň:</b>\n\nHabaryňyz aşakdaky ýaly bolar. Iberýärismi?"
-
     preview_message = await send_mail_preview(admin_chat_id, content)
 
     confirmation_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -233,93 +197,8 @@ async def process_mailing_content(message: Message, state: FSMContext, mail_type
 
     await state.update_data(admin_message_id=confirm_msg.message_id, preview_message_id=preview_message.message_id)
 
-    if mail_type == "user":
-        await state.set_state(AdminStates.waiting_for_mailing_confirmation)
-    else:
-        await state.set_state(AdminStates.waiting_for_channel_mailing_confirmation)
-
-
-
-async def process_mailing_content(message: Message, state: FSMContext, mail_type: str):
-    """
-    Adminin gönderdiği medya ya da mesajı algılar ve mailing verisine dönüştürür.
-    HTML desteklidir. Her medya tipini kapsar.
-    """
-    content = {}
-
-    if message.photo:
-        content = {
-            'type': 'photo',
-            'file_id': message.photo[-1].file_id,
-            'caption': message.caption,
-            'text': message.html_text
-        }
-    elif message.video:
-        content = {
-            'type': 'video',
-            'file_id': message.video.file_id,
-            'caption': message.caption
-        }
-    elif message.animation:
-        content = {
-            'type': 'animation',
-            'file_id': message.animation.file_id,
-            'caption': message.caption
-        }
-    elif message.document:
-        content = {
-            'type': 'document',
-            'file_id': message.document.file_id,
-            'caption': message.caption
-        }
-    elif message.text:
-        content = {
-            'type': 'text',
-            'text': message.html_text  # HTML destekli!
-        }
-    else:
-        await message.answer("⚠️ Bu habar görnüşi goldanmaýar. Tekst, surat, wideo, GIF ýa-da faýl iberiň.")
-        return
-
-    await state.update_data(mailing_content=content)
-    
-    fsm_data = await state.get_data()
-    admin_message_id = fsm_data.get('admin_message_id')
-    admin_chat_id = message.chat.id
-
-    try:
-        await bot.delete_message(admin_chat_id, admin_message_id)
-    except (TelegramBadRequest, AttributeError):
-        pass
-
-    preview_text = "🗂️ <b>Öňünden tassyklaň:</b>\n\nHabaryňyz aşakdaky ýaly bolar. Iberýärismi?"
-    
-    preview_message = await send_mail_preview(admin_chat_id, content)
-
-    confirmation_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Düwmesiz ibermek", callback_data=f"{mail_type}_mail_confirm_send")],
-        [InlineKeyboardButton(text="➕ Düwmeleri goşmak", callback_data=f"{mail_type}_mail_confirm_add_buttons")],
-        [InlineKeyboardButton(text="⬅️ Ýatyr", callback_data="admin_panel_main")]
-    ])
-    confirm_msg = await bot.send_message(admin_chat_id, preview_text, reply_markup=confirmation_keyboard)
-
-    await state.update_data(admin_message_id=confirm_msg.message_id, preview_message_id=preview_message.message_id)
-
-    if mail_type == "user":
-        await state.set_state(AdminStates.waiting_for_mailing_confirmation)
-    else:
-        await state.set_state(AdminStates.waiting_for_channel_mailing_confirmation)
-
-
-    if content_type == 'text':
-        return await bot.send_message(chat_id, text, reply_markup=keyboard)
-    elif content_type == 'photo':
-        return await bot.send_photo(chat_id, file_id, caption=caption, reply_markup=keyboard)
-    elif content_type == 'video':
-        return await bot.send_video(chat_id, file_id, caption=caption, reply_markup=keyboard)
-    elif content_type == 'animation':
-        return await bot.send_animation(chat_id, file_id, caption=caption, reply_markup=keyboard)
-
+    target_state = AdminStates.waiting_for_mailing_confirmation if mail_type == "user" else AdminStates.waiting_for_channel_mailing_confirmation
+    await state.set_state(target_state)
 
 async def get_channels_from_db():
     async with DB_POOL.acquire() as conn:
@@ -342,7 +221,6 @@ async def delete_channel_from_db(channel_id: str):
     async with DB_POOL.acquire() as conn:
         result = await conn.execute("DELETE FROM channels WHERE channel_id = $1", str(channel_id))
         return result != "DELETE 0"
-
 
 async def get_addlists_from_db():
     async with DB_POOL.acquire() as conn:
@@ -371,7 +249,6 @@ async def get_vpn_configs_from_db():
         rows = await conn.fetch("SELECT id, config_text FROM vpn_configs ORDER BY id")
         return [{"db_id": row['id'], "config_text": row['config_text']} for row in rows]
 
-
 async def add_vpn_config_to_db(config_text: str):
     async with DB_POOL.acquire() as conn:
         try:
@@ -396,11 +273,7 @@ async def get_users_from_db():
 
 async def add_user_to_db(user_id: int):
     async with DB_POOL.acquire() as conn:
-        try:
-            await conn.execute("INSERT INTO bot_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
-        except Exception as e:
-            logging.error(f"Error adding user {user_id} to DB: {e}")
-
+        await conn.execute("INSERT INTO bot_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
 
 async def get_admins_from_db():
     async with DB_POOL.acquire() as conn:
@@ -409,12 +282,8 @@ async def get_admins_from_db():
 
 async def add_admin_to_db(user_id: int):
     async with DB_POOL.acquire() as conn:
-        try:
-            await conn.execute("INSERT INTO bot_admins (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
-            return True
-        except Exception as e:
-            logging.error(f"Error adding admin {user_id} to DB: {e}")
-            return False
+        await conn.execute("INSERT INTO bot_admins (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
+        return True
 
 async def delete_admin_from_db(user_id: int):
     async with DB_POOL.acquire() as conn:
@@ -427,67 +296,22 @@ async def is_user_admin_in_db(user_id: int) -> bool:
     admins = await get_admins_from_db()
     return user_id in admins
 
-async def create_subscription_task_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    channels = await get_channels_from_db()
-    addlists = await get_addlists_from_db()
-    keyboard_buttons = []
-
-    for channel in channels:
+async def get_unsubscribed_channels(user_id: int) -> list:
+    all_channels = await get_channels_from_db()
+    unsubscribed = []
+    for channel in all_channels:
         try:
             member = await bot.get_chat_member(chat_id=channel['id'], user_id=user_id)
-            if member.status not in ['member', 'administrator', 'creator', 'restricted'] or \
-               (member.status == 'restricted' and hasattr(member, 'is_member') and not member.is_member):
-                keyboard_buttons.append([
-                    InlineKeyboardButton(text=f"{channel['name']}", url=f"https://t.me/{str(channel['id']).lstrip('@')}")
-                ])
+            if member.status not in ['member', 'administrator', 'creator']:
+                unsubscribed.append(channel)
+        except (TelegramForbiddenError, TelegramBadRequest):
+            unsubscribed.append(channel)
         except Exception as e:
-            logging.error(f"Kanala agzalygy barlamakda ýalňyşlyk {channel['id']} ulanyjy {user_id} üçin: {e}")
-            keyboard_buttons.append([
-                InlineKeyboardButton(text=f"⚠️ {channel['name']} (barlag ýalňyşlygy)", url=f"https://t.me/{str(channel['id']).lstrip('@')}")
-            ])
-            continue
-    for addlist in addlists:
-        keyboard_buttons.append([
-            InlineKeyboardButton(text=f"{addlist['name']}", url=addlist['url'])
-        ])
-    if keyboard_buttons:
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="✅ Agza Boldum", callback_data="check_subscription")
-        ])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+            logging.error(f"Error checking subscription for user {user_id} in channel {channel['id']}: {e}")
+            unsubscribed.append(channel)
+    return unsubscribed
 
-async def has_unsubscribed_channels(user_id: int) -> bool:
-    channels = await get_channels_from_db()
-    if not channels:
-        return False
-    for channel in channels:
-        try:
-            chat_identifier = channel['id']
-            if not (isinstance(chat_identifier, str) and chat_identifier.startswith('@')):
-                try:
-                    chat_identifier = int(str(chat_identifier))
-                except ValueError:
-                    logging.error(f"get_chat_member üçin nädogry kanal ID formaty: {channel['id']}. Geçirilýär.")
-                    return True
-            member = await bot.get_chat_member(chat_id=chat_identifier, user_id=user_id)
-            if member.status == 'restricted':
-                if hasattr(member, 'is_member') and not member.is_member:
-                    logging.info(f"Ulanyjy {user_id} {channel['id']} kanala AGZA BOLMADYK (ýagdaýy: {member.status}, is_member=False)")
-                    return True
-            elif member.status not in ['member', 'administrator', 'creator']:
-                logging.info(f"Ulanyjy {user_id} {channel['id']} kanala AGZA BOLMADYK (ýagdaýy: {member.status})")
-                return True
-        except TelegramForbiddenError:
-            logging.error(f"TelegramForbiddenError: Bot {channel['id']} kanalyň adminy däl. Howpsuzlyk üçin ulanyjy agza bolmadyk hasaplanýar.")
-            return True
-        except TelegramBadRequest as e:
-            logging.warning(f"Ulanyjy {user_id}-iň {channel['id']} kanala agzalygy barlanda TelegramBadRequest: {e}. Ulanyjy agza bolmadyk hasaplanýar.")
-            return True
-        except Exception as e:
-            logging.warning(f"Ulanyjy {user_id}-iň {channel['id']} kanala agzalygyny barlanda umumy ýalňyşlyk: {e}. Ulanyjy Agza bolmadyk hasaplanýar.")
-            return True
-    return False
-
+# GÜNCELLENDİ: "Adminleri Listele" butonu eklendi.
 def create_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 Bot statistikasy", callback_data="get_stats")],
@@ -500,48 +324,153 @@ def create_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
     ]
     if user_id == SUPER_ADMIN_ID:
         buttons.extend([
-            [InlineKeyboardButton(text="👮 Admin goşmak", callback_data="add_admin"), InlineKeyboardButton(text="🚫 Admin pozmak", callback_data="delete_admin")]
+            [InlineKeyboardButton(text="👮 Admin goşmak", callback_data="add_admin"), InlineKeyboardButton(text="🚫 Admin pozmak", callback_data="delete_admin")],
+            # YENİ EKLENDİ
+            [InlineKeyboardButton(text="👮 Adminleri Listele", callback_data="list_admins")]
         ])
     buttons.append([InlineKeyboardButton(text="⬅️ Admin panelden çykmak", callback_data="exit_admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 
 @router.message(Command("start"))
 async def start_command(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     await add_user_to_db(user_id)
+    await state.clear()
 
-    vpn_configs_full = await get_vpn_configs_from_db()
-    vpn_configs = [item['config_text'] for item in vpn_configs_full]
-
+    vpn_configs = await get_vpn_configs_from_db()
     if not vpn_configs:
         await message.answer("😔 Gynansak-da, häzirki wagtda elýeterli VPN Kodlary ýok. Haýyş edýäris, soňrak synanyşyň.")
+        return
+
+    unsubscribed_channels = await get_unsubscribed_channels(user_id)
+    addlists = await get_addlists_from_db()
+
+    if not unsubscribed_channels and not addlists:
+        vpn_config_text = random.choice(vpn_configs)['config_text']
+        text = "🎉 Siz ähli talap edilýän bellikleri ýerine ýetirdiňiz!"
+        await message.answer(
+            f"{text}\n\n🔑 <b>siziň VPN Kodyňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>"
+        )
+    else:
+        welcome_text = await get_setting_from_db('welcome_message', "👋 <b>Hoş geldiňiz!</b>")
+        
+        tasks_text_list = []
+        keyboard_buttons = []
+        
+        for channel in unsubscribed_channels:
+            tasks_text_list.append(f"▫️ <a href=\"https://t.me/{str(channel['id']).lstrip('@')}\">{channel['name']}</a>")
+            keyboard_buttons.append([InlineKeyboardButton(text=f"{channel['name']}", url=f"https://t.me/{str(channel['id']).lstrip('@')}")])
+
+        for addlist in addlists:
+            tasks_text_list.append(f"▫️ <a href=\"{addlist['url']}\">{addlist['name']}</a>")
+            keyboard_buttons.append([InlineKeyboardButton(text=f"{addlist['name']}", url=addlist['url'])])
+        
+        if tasks_text_list:
+            full_message = welcome_text + "\n\nVPN koduny almak üçin şu ýerlere agza boluň:\n\n" + "\n".join(tasks_text_list)
+            keyboard_buttons.append([InlineKeyboardButton(text="✅ Agza Boldum", callback_data="check_subscription")])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+            await message.answer(full_message, reply_markup=keyboard, disable_web_page_preview=True)
+            await state.set_state(SubscriptionStates.checking_subscription)
+        else:
+            vpn_config_text = random.choice(vpn_configs)['config_text']
+            await message.answer(f"✨ Agza bolanyňyz üçin sagboluň!\n\n🔑 <b>Siziň VPN Kodyňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>")
+
+# --- YENİ EKLENEN FONKSİYON: /help komutu ---
+@router.message(Command("help"))
+async def help_command(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "🆘 <b>Ýardam gerekmi?</b>\n\n"
+        "Meseläňizi ýa-da soragyňyzy şu habardan soň iberiň. Habaryňyz gönüden-göni adminlere iberiler."
+    )
+    await state.set_state(HelpStates.waiting_for_help_message)
+
+@router.message(HelpStates.waiting_for_help_message)
+async def process_help_message(message: Message, state: FSMContext):
+    await state.clear()
+    user_info = f"👤 <b>{message.from_user.full_name}</b>"
+    if message.from_user.username:
+        user_info += f" (@{message.from_user.username})"
+    user_info += f"\n🆔 ID: <code>{message.from_user.id}</code>"
+
+    all_admins = await get_admins_from_db()
+    if SUPER_ADMIN_ID not in all_admins:
+        all_admins.append(SUPER_ADMIN_ID)
+
+    if not all_admins:
+        await message.answer("😔 Gynansagam, häzirki wagtda size kömek edip biljek admin tapylmady.")
+        return
+
+    # Kullanıcıya mesajının alındığını bildir
+    await message.answer("✅ Habaryňyz adminlere iberildi. Ýakyn wagtda size jogap bererler. Garaşmagyňyzy haýyş edýäris.")
+
+    # Adminlere mesajı ilet
+    for admin_id in all_admins:
+        try:
+            # Kullanıcı bilgilerini ve mesajını ilet
+            await bot.send_message(
+                admin_id,
+                f"🆘 <b>Täze Ýardam Islegi</b>\n\n{user_info}\n\n<b>Habar:</b>"
+            )
+            # Mesajı kopyalayarak ilet (forward yerine)
+            await bot.copy_message(
+                chat_id=admin_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="↪️ Jogap bermek", callback_data=f"reply_to_user:{message.from_user.id}")]
+                ])
+            )
+        except (TelegramForbiddenError, TelegramBadRequest):
+            logging.warning(f"Could not send help request to admin {admin_id}. Bot might be blocked.")
+        except Exception as e:
+            logging.error(f"Failed to forward help message to admin {admin_id}: {e}")
+
+# YENİ EKLENDİ: Admine, kullanıcıya yanıt verme işlemini başlatan handler
+@router.callback_query(lambda c: c.data.startswith("reply_to_user:"))
+async def prompt_admin_for_reply(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_user_admin_in_db(callback.from_user.id):
+        return await callback.answer("⛔ Giriş gadagan.", show_alert=True)
+    
+    try:
+        user_id_to_reply = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        return await callback.answer("⚠️ Nädogry ulanyjy ID.", show_alert=True)
+
+    await state.set_state(AdminStates.waiting_for_reply_to_user)
+    await state.update_data(user_id_to_reply=user_id_to_reply)
+    
+    await callback.message.answer(
+        f"✍️ <code>{user_id_to_reply}</code> ID-li ulanyja jogabyňyzy ýazyň.\n"
+        f"Siziň habaryňyz oňa gönüden-göni iberiler."
+    )
+    await callback.answer()
+
+# YENİ EKLENDİ: Adminin yanıtını kullanıcıya gönderen handler
+@router.message(AdminStates.waiting_for_reply_to_user)
+async def send_reply_to_user(message: Message, state: FSMContext):
+    fsm_data = await state.get_data()
+    user_id_to_reply = fsm_data.get('user_id_to_reply')
+
+    if not user_id_to_reply:
+        await message.answer("⚠️ Jogap beriljek ulanyjy tapylmady. Täzeden synanyşyň.")
         await state.clear()
         return
 
-    user_needs_to_subscribe_to_channels = await has_unsubscribed_channels(user_id)
-    channels_exist = bool(await get_channels_from_db())
-
-    if not user_needs_to_subscribe_to_channels:
-        vpn_config_text = random.choice(vpn_configs)
-        text = "🎉 Siz ähli kanallara Agza boldyňyz! " if channels_exist else "✨ Agza bolanyňyzüçin sagboluň!"
-        await message.answer(
-            f"{text}\n\n"
-            f"🔑 <b>siziň VPN Kodyňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>"
-        )
+    try:
+        # Mesajı direkt olarak kullanıcıya gönder
+        await bot.send_message(user_id_to_reply, "ℹ️ <b>Admin jogaby:</b>")
+        await message.copy_to(user_id_to_reply)
+        
+        # Admine işlemin başarılı olduğunu bildir
+        await message.answer(f"✅ Jogabyňyz <code>{user_id_to_reply}</code> ID-li ulanyja üstünlikli iberildi.")
+    except (TelegramForbiddenError, TelegramBadRequest):
+        await message.answer(f"⚠️ Jogap iberilmedi. Ulanyjy boty bloklan bolmagy ähtimal.")
+    except Exception as e:
+        await message.answer(f"⚠️ Jogap iberlende näsazlyk ýüze çykdy: {e}")
+    finally:
         await state.clear()
-    else:
-        keyboard = await create_subscription_task_keyboard(user_id)
-        welcome_text = await get_setting_from_db('welcome_message', "👋 <b>Hoş geldiňiz!</b>\n\nVPN almak üçin, aşakdaky Kanallara agza boluň we 'Agza boldum' düwmesine basyň.")
-        if not keyboard.inline_keyboard:
-            if vpn_configs:
-                 vpn_config_text = random.choice(vpn_configs)
-                 await message.answer(f"✨ Agza bolanyňyz üçin sagboluň!\n\n🔑 <b>Siziň VPN Kodyňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>")
-            else:
-                 await message.answer("😔 Häzirki wagtda elýeterli VPN kodlary ýok.")
-            await state.clear()
-        else:
-            await message.answer(welcome_text, reply_markup=keyboard)
-            await state.set_state(SubscriptionStates.checking_subscription)
 
 @router.message(Command("admin"))
 async def admin_command(message: types.Message, state: FSMContext):
@@ -558,23 +487,16 @@ async def exit_admin_panel_handler(callback: types.CallbackQuery, state: FSMCont
         return
     await state.clear()
     try:
-        await callback.message.edit_text(
-            "✅ Siz admin panelden çykdyňyz.\n\nAdaty ulanyjy hökmünde täzeden işe başlamak üçin /start giriziň",
-            reply_markup=None
-        )
+        await callback.message.edit_text("✅ Siz admin panelden çykdyňyz.\n\nAdaty ulanyjy hökmünde täzeden işe başlamak üçin /start giriziň.")
     except TelegramBadRequest:
-        await callback.message.answer(
-            "✅ Siz admin panelden çykdyňyz.\n\nAdaty ulanyjy hökmünde täzeden işe başlamak üçin /start giriziň",
-            reply_markup=None
-        )
+        await callback.message.delete()
+        await callback.message.answer("✅ Siz admin panelden çykdyňyz.")
     await callback.answer()
 
 @router.callback_query(lambda c: c.data == "get_stats")
 async def get_statistics(callback: types.CallbackQuery):
     if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    
+        return await callback.answer("⛔ Giriş gadagan.", show_alert=True)
     async with DB_POOL.acquire() as conn:
         user_count = await conn.fetchval("SELECT COUNT(*) FROM bot_users")
         channel_count = await conn.fetchval("SELECT COUNT(*) FROM channels")
@@ -583,111 +505,32 @@ async def get_statistics(callback: types.CallbackQuery):
         admin_count = await conn.fetchval("SELECT COUNT(*) FROM bot_admins")
 
     status_description = "Bot işleýär" if vpn_count > 0 else "VPN KODLARY ÝOK!"
-    alert_text = (
-        f"📊 Bot statistikasy:\n"
-        f"👤 Ulanyjylar: {user_count}\n"
-        f"📢 Kanallar: {channel_count}\n"
-        f"📁 addlistlar: {addlist_count}\n"
-        f"🔑 VPN Kodlary: {vpn_count}\n"
-        f"👮 Adminler (goşm.): {admin_count}\n"
-        f"⚙️ Ýagdaýy: {status_description}"
-    )
-    try:
-        await callback.answer(text=alert_text, show_alert=True)
-    except Exception as e:
-        logging.error(f"Statistikany duýduryşda görkezmekde ýalňyşlyk: {e}")
-        await callback.answer("⚠️ Statistika görkezmekde ýalňyşlyk.", show_alert=True)
-
+    alert_text = (f"📊 Bot statistikasy:\n"
+                  f"👤 Ulanyjylar: {user_count}\n"
+                  f"📢 Kanallar: {channel_count}\n"
+                  f"📁 addlistlar: {addlist_count}\n"
+                  f"🔑 VPN Kodlary: {vpn_count}\n"
+                  f"👮 Adminler (goşm.): {admin_count}\n"
+                  f"⚙️ Ýagdaýy: {status_description}")
+    await callback.answer(text=alert_text, show_alert=True)
 
 def parse_buttons_from_text(text: str) -> types.InlineKeyboardMarkup | None:
-    lines = text.strip().split('\n')
-    keyboard_buttons = []
+    lines, keyboard_buttons = text.strip().split('\n'), []
     for line in lines:
-        if ' - ' not in line:
-            continue
+        if ' - ' not in line: continue
         parts = line.split(' - ', 1)
-        btn_text = parts[0].strip()
-        btn_url = parts[1].strip()
+        btn_text, btn_url = parts[0].strip(), parts[1].strip()
         if btn_text and (btn_url.startswith('https://') or btn_url.startswith('http://')):
             keyboard_buttons.append([types.InlineKeyboardButton(text=btn_text, url=btn_url)])
-    if not keyboard_buttons:
-        return None
-    return types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-
-async def process_mailing_content(message: Message, state: FSMContext, mail_type: str):
-    """
-    Универсальный обработчик контента для рассылки.
-    Принимает текст, фото, видео, GIF.
-    """
-    content = {}
-    if message.photo:
-        content = {
-            'type': 'photo',
-            'file_id': message.photo[-1].file_id,
-            'caption': message.caption
-        }
-    elif message.video:
-        content = {
-            'type': 'video',
-            'file_id': message.video.file_id,
-            'caption': message.caption
-        }
-    elif message.animation:
-        content = {
-            'type': 'animation',
-            'file_id': message.animation.file_id,
-            'caption': message.caption
-        }
-    elif message.text:
-        content = {
-            'type': 'text',
-            'text': message.html_text
-        }
-    else:
-        await message.answer("⚠️ Bu habar görnüşi goldanmaýar. Tekst, surat, wideo ýa-da GIF iberiň.")
-        return
-
-    await state.update_data(mailing_content=content)
-    
-    fsm_data = await state.get_data()
-    admin_message_id = fsm_data.get('admin_message_id')
-    admin_chat_id = message.chat.id
-
-    try:
-        await bot.delete_message(admin_chat_id, admin_message_id)
-    except (TelegramBadRequest, AttributeError):
-        pass
-
-    preview_text = "🗂️ <b>Öňünden tassyklaň:</b>\n\nHabaryňyz aşakdaky ýaly bolar. Iberýärismi?"
-    
-    preview_message = await send_mail_preview(admin_chat_id, content)
-
-    confirmation_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Düwmesiz ibermek", callback_data=f"{mail_type}_mail_confirm_send")],
-        [InlineKeyboardButton(text="➕ Düwmeleri goşmak", callback_data=f"{mail_type}_mail_confirm_add_buttons")],
-        [InlineKeyboardButton(text="⬅️ Ýatyr", callback_data="admin_panel_main")]
-    ])
-    confirm_msg = await bot.send_message(admin_chat_id, preview_text, reply_markup=confirmation_keyboard)
-
-    await state.update_data(admin_message_id=confirm_msg.message_id, preview_message_id=preview_message.message_id)
-
-    if mail_type == "user":
-        await state.set_state(AdminStates.waiting_for_mailing_confirmation)
-    else:
-        await state.set_state(AdminStates.waiting_for_channel_mailing_confirmation)
-
+    return types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons) if keyboard_buttons else None
 
 async def execute_user_broadcast(admin_message: types.Message, mailing_content: dict, mailing_keyboard: types.InlineKeyboardMarkup | None):
     users_to_mail = await get_users_from_db()
-    
     if not users_to_mail:
-        await admin_message.edit_text("👥 Ibermek üçin ulanyjylar ýok.", reply_markup=back_to_admin_markup)
-        return
-
+        return await admin_message.edit_text("👥 Ibermek üçin ulanyjylar ýok.", reply_markup=back_to_admin_markup)
+    
     await admin_message.edit_text(f"⏳ <b>{len(users_to_mail)}</b> sany ulanyja ibermek başlanýar...", reply_markup=None)
-
-    success_count = 0
-    fail_count = 0
+    success_count, fail_count = 0, 0
     for user_id in users_to_mail:
         try:
             await send_mail_preview(user_id, mailing_content, mailing_keyboard)
@@ -700,69 +543,51 @@ async def execute_user_broadcast(admin_message: types.Message, mailing_content: 
         await asyncio.sleep(0.1)
 
     await save_last_mail_content(mailing_content, mailing_keyboard, "user")
-
     final_report_text = f"✅ <b>Ulanyjylara Iberiş Tamamlandy</b> ✅\n\n👍 Üstünlikli: {success_count}\n👎 Başartmady: {fail_count}"
     await admin_message.edit_text(final_report_text, reply_markup=back_to_admin_markup)
 
+# GÜNCELLENDİ: Mesaj gönderme handler'ı yeni dosya türlerini (ses, sesli mesaj vb.) yakalamak için.
+@router.message(AdminStates.waiting_for_mailing_message, F.content_type.in_({'text', 'photo', 'video', 'animation', 'document', 'audio', 'voice'}))
+async def process_user_mailing_message(message: Message, state: FSMContext):
+    if not await is_user_admin_in_db(message.from_user.id): return
+    await process_mailing_content(message, state, "user")
 
+# --- USER MAILING ---
 @router.callback_query(lambda c: c.data == "start_mailing")
 async def start_mailing_prompt(callback: types.CallbackQuery, state: FSMContext):
     if not await is_user_admin_in_db(callback.from_user.id): return
-    
     last_content, _ = await get_last_mail_content("user")
-    
     keyboard_buttons = [[InlineKeyboardButton(text="➕ Täze habar döretmek", callback_data="create_new_user_mail")]]
     if last_content:
         keyboard_buttons.insert(0, [InlineKeyboardButton(text="🔄 Soňky habary ulanmak", callback_data="repeat_last_user_mail")])
-    
     keyboard_buttons.append([InlineKeyboardButton(text="⬅️ Yza", callback_data="admin_panel_main")])
-    
-    await callback.message.edit_text(
-        "📬 <b>Ulanyjylara Iberiş</b> 📬\n\nBir hereket saýlaň:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-    )
+    await callback.message.edit_text("📬 <b>Ulanyjylara Iberiş</b> 📬\n\nBir hereket saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
     await state.set_state(AdminStates.waiting_for_user_mail_action)
     await callback.answer()
-
 
 @router.callback_query(AdminStates.waiting_for_user_mail_action)
 async def process_user_mail_action(callback: types.CallbackQuery, state: FSMContext):
     action = callback.data
     if action == "create_new_user_mail":
-        await callback.message.edit_text(
-            "✍️ Ibermek isleýän habaryňyzy (tekst, surat, wideo ýa-da GIF) iberiň.",
-            reply_markup=back_to_admin_markup
-        )
-        await state.update_data(admin_message_id=callback.message.message_id)
+        msg = await callback.message.edit_text("✍️ Ibermek isleýän habaryňyzy (tekst, surat, wideo, ses ýa-da faýl) iberiň.", reply_markup=back_to_admin_markup)
+        await state.update_data(admin_message_id=msg.message_id)
         await state.set_state(AdminStates.waiting_for_mailing_message)
     elif action == "repeat_last_user_mail":
         content, keyboard = await get_last_mail_content("user")
         if not content:
-            await callback.answer("⚠️ Soňky habar tapylmady.", show_alert=True)
-            return
-
+            return await callback.answer("⚠️ Soňky habar tapylmady.", show_alert=True)
         await state.update_data(mailing_content=content, mailing_keyboard=keyboard)
         await callback.message.delete()
-        
         preview_text = "🗂️ <b>Soňky habary tassyklaň:</b>\n\nŞu habary ulanyjylara iberýärismi?"
         preview_msg = await send_mail_preview(callback.from_user.id, content, keyboard)
-        
         confirmation_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Hawa, ibermek", callback_data="user_mail_confirm_send_repeated")],
             [InlineKeyboardButton(text="⬅️ Ýok, yza", callback_data="admin_panel_main")]
         ])
         confirm_msg = await bot.send_message(callback.from_user.id, preview_text, reply_markup=confirmation_keyboard)
-
         await state.update_data(admin_message_id=confirm_msg.message_id, preview_message_id=preview_msg.message_id)
         await state.set_state(AdminStates.waiting_for_mailing_confirmation)
     await callback.answer()
-
-
-@router.message(AdminStates.waiting_for_mailing_message, F.content_type.in_({'text', 'photo', 'video', 'animation'}))
-async def process_user_mailing_message(message: Message, state: FSMContext):
-    if not await is_user_admin_in_db(message.from_user.id): return
-    await process_mailing_content(message, state, "user")
-
 
 @router.callback_query(AdminStates.waiting_for_mailing_confirmation)
 async def process_user_mailing_confirmation(callback: types.CallbackQuery, state: FSMContext):
@@ -771,59 +596,47 @@ async def process_user_mailing_confirmation(callback: types.CallbackQuery, state
     mailing_keyboard = fsm_data.get('mailing_keyboard')
     
     try:
-        await bot.delete_message(callback.from_user.id, fsm_data.get('admin_message_id'))
-        await bot.delete_message(callback.from_user.id, fsm_data.get('preview_message_id'))
+        if fsm_data.get('admin_message_id'): await bot.delete_message(callback.from_user.id, fsm_data.get('admin_message_id'))
+        if fsm_data.get('preview_message_id'): await bot.delete_message(callback.from_user.id, fsm_data.get('preview_message_id'))
     except (TelegramBadRequest, KeyError): pass
 
     if not mailing_content:
         await bot.send_message(callback.from_user.id, "⚠️ Ýalňyşlyk: habar tapylmady.", reply_markup=back_to_admin_markup)
-        await state.clear()
-        return
+        return await state.clear()
 
     if callback.data in ["user_mail_confirm_send", "user_mail_confirm_send_repeated"]:
         msg_for_broadcast = await bot.send_message(callback.from_user.id, "⏳...")
         await execute_user_broadcast(msg_for_broadcast, mailing_content, mailing_keyboard)
         await state.clear()
     elif callback.data == "user_mail_confirm_add_buttons":
-        msg = await bot.send_message(
-            callback.from_user.id,
-            "🔗 <b>Düwmeleri goşmak</b> 🔗\n\nFormat: <code>Tekst - https://salgy.com</code>\nHer düwme täze setirde.",
-            reply_markup=back_to_admin_markup
-        )
+        msg = await bot.send_message(callback.from_user.id, "🔗 <b>Düwmeleri goşmak</b> 🔗\n\nFormat: <code>Tekst - https://salgy.com</code>\nHer düwme täze setirde.", reply_markup=back_to_admin_markup)
         await state.update_data(admin_message_id=msg.message_id)
         await state.set_state(AdminStates.waiting_for_mailing_buttons)
     await callback.answer()
-
 
 @router.message(AdminStates.waiting_for_mailing_buttons)
 async def process_user_mailing_buttons(message: Message, state: FSMContext):
     keyboard = parse_buttons_from_text(message.text)
     if not keyboard:
-        await message.answer("⚠️ Nädogry format! Täzeden synanyşyň.")
-        return
-    
+        return await message.answer("⚠️ Nädogry format! Täzeden synanyşyň.")
     await message.delete()
     fsm_data = await state.get_data()
     mailing_content = fsm_data.get('mailing_content')
-    
-    try: await bot.delete_message(message.chat.id, fsm_data.get('admin_message_id'))
+    try:
+        if fsm_data.get('admin_message_id'): await bot.delete_message(message.chat.id, fsm_data.get('admin_message_id'))
     except (TelegramBadRequest, KeyError): pass
-
     msg_for_broadcast = await bot.send_message(message.chat.id, "⏳...")
     await execute_user_broadcast(msg_for_broadcast, mailing_content, keyboard)
     await state.clear()
 
-
+# --- CHANNEL MAILING ---
 async def execute_channel_broadcast(admin_message: types.Message, mailing_content: dict, mailing_keyboard: types.InlineKeyboardMarkup | None):
     channels_to_mail = await get_channels_from_db()
     if not channels_to_mail:
-        await admin_message.edit_text("📢 Ibermek üçin kanallar ýok.", reply_markup=back_to_admin_markup)
-        return
+        return await admin_message.edit_text("📢 Ibermek üçin kanallar ýok.", reply_markup=back_to_admin_markup)
 
     await admin_message.edit_text(f"⏳ <b>{len(channels_to_mail)}</b> sany kanala ibermek başlanýar...", reply_markup=None)
-
-    success_count = 0
-    fail_count = 0
+    success_count, fail_count = 0, 0
     for channel in channels_to_mail:
         try:
             await send_mail_preview(channel['id'], mailing_content, mailing_keyboard)
@@ -837,68 +650,50 @@ async def execute_channel_broadcast(admin_message: types.Message, mailing_conten
         await asyncio.sleep(0.2)
     
     await save_last_mail_content(mailing_content, mailing_keyboard, "channel")
-
     final_report_text = f"✅ <b>Kanallara Iberiş Tamamlandy</b> ✅\n\n👍 Üstünlikli: {success_count}\n👎 Başartmady: {fail_count}"
     await admin_message.edit_text(final_report_text, reply_markup=back_to_admin_markup)
 
 @router.callback_query(lambda c: c.data == "start_channel_mailing")
 async def start_channel_mailing_prompt(callback: types.CallbackQuery, state: FSMContext):
     if not await is_user_admin_in_db(callback.from_user.id): return
-    
     last_content, _ = await get_last_mail_content("channel")
-    
     keyboard_buttons = [[InlineKeyboardButton(text="➕ Täze habar döretmek", callback_data="create_new_channel_mail")]]
     if last_content:
         keyboard_buttons.insert(0, [InlineKeyboardButton(text="🔄 Soňky habary ulanmak", callback_data="repeat_last_channel_mail")])
-    
     keyboard_buttons.append([InlineKeyboardButton(text="⬅️ Yza", callback_data="admin_panel_main")])
-
-    await callback.message.edit_text(
-        "📢 <b>Kanallara Iberiş</b> 📢\n\nBir hereket saýlaň:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-    )
+    await callback.message.edit_text("📢 <b>Kanallara Iberiş</b> 📢\n\nBir hereket saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
     await state.set_state(AdminStates.waiting_for_channel_mail_action)
     await callback.answer()
-
 
 @router.callback_query(AdminStates.waiting_for_channel_mail_action)
 async def process_channel_mail_action(callback: types.CallbackQuery, state: FSMContext):
     action = callback.data
     if action == "create_new_channel_mail":
-        await callback.message.edit_text(
-            "✍️ Ibermek isleýän habaryňyzy (tekst, surat, wideo ýa-da GIF) iberiň.",
-            reply_markup=back_to_admin_markup
-        )
-        await state.update_data(admin_message_id=callback.message.message_id)
+        msg = await callback.message.edit_text("✍️ Ibermek isleýän habaryňyzy (tekst, surat, wideo, ses ýa-da faýl) iberiň.", reply_markup=back_to_admin_markup)
+        await state.update_data(admin_message_id=msg.message_id)
         await state.set_state(AdminStates.waiting_for_channel_mailing_message)
     elif action == "repeat_last_channel_mail":
         content, keyboard = await get_last_mail_content("channel")
         if not content:
-            await callback.answer("⚠️ Soňky habar tapylmady.", show_alert=True)
-            return
-
+            return await callback.answer("⚠️ Soňky habar tapylmady.", show_alert=True)
         await state.update_data(mailing_content=content, mailing_keyboard=keyboard)
         await callback.message.delete()
-        
         preview_text = "🗂️ <b>Soňky habary tassyklaň:</b>\n\nŞu habary kanallara iberýärismi?"
         preview_msg = await send_mail_preview(callback.from_user.id, content, keyboard)
-        
         confirmation_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Hawa, ibermek", callback_data="channel_mail_confirm_send_repeated")],
             [InlineKeyboardButton(text="⬅️ Ýok, yza", callback_data="admin_panel_main")]
         ])
         confirm_msg = await bot.send_message(callback.from_user.id, preview_text, reply_markup=confirmation_keyboard)
-
         await state.update_data(admin_message_id=confirm_msg.message_id, preview_message_id=preview_msg.message_id)
         await state.set_state(AdminStates.waiting_for_channel_mailing_confirmation)
     await callback.answer()
 
-
-@router.message(AdminStates.waiting_for_channel_mailing_message, F.content_type.in_({'text', 'photo', 'video', 'animation'}))
+# GÜNCELLENDİ: Kanal mesajları için de tüm dosya türlerini destekler
+@router.message(AdminStates.waiting_for_channel_mailing_message, F.content_type.in_({'text', 'photo', 'video', 'animation', 'document', 'audio', 'voice'}))
 async def process_channel_mailing_message(message: Message, state: FSMContext):
     if not await is_user_admin_in_db(message.from_user.id): return
     await process_mailing_content(message, state, "channel")
-
 
 @router.callback_query(AdminStates.waiting_for_channel_mailing_confirmation)
 async def process_channel_mailing_confirmation(callback: types.CallbackQuery, state: FSMContext):
@@ -907,724 +702,465 @@ async def process_channel_mailing_confirmation(callback: types.CallbackQuery, st
     mailing_keyboard = fsm_data.get('mailing_keyboard')
     
     try:
-        await bot.delete_message(callback.from_user.id, fsm_data.get('admin_message_id'))
-        await bot.delete_message(callback.from_user.id, fsm_data.get('preview_message_id'))
+        if fsm_data.get('admin_message_id'): await bot.delete_message(callback.from_user.id, fsm_data.get('admin_message_id'))
+        if fsm_data.get('preview_message_id'): await bot.delete_message(callback.from_user.id, fsm_data.get('preview_message_id'))
     except (TelegramBadRequest, KeyError): pass
 
     if not mailing_content:
         await bot.send_message(callback.from_user.id, "⚠️ Ýalňyşlyk: habar tapylmady.", reply_markup=back_to_admin_markup)
-        await state.clear()
-        return
+        return await state.clear()
 
     if callback.data in ["channel_mail_confirm_send", "channel_mail_confirm_send_repeated"]:
         msg_for_broadcast = await bot.send_message(callback.from_user.id, "⏳...")
         await execute_channel_broadcast(msg_for_broadcast, mailing_content, mailing_keyboard)
         await state.clear()
     elif callback.data == "channel_mail_confirm_add_buttons":
-        msg = await bot.send_message(
-            callback.from_user.id,
-            "🔗 <b>Düwmeleri goşmak</b> 🔗\n\nFormat: <code>Tekst - https://salgy.com</code>\nHer düwme täze setirde.",
-            reply_markup=back_to_admin_markup
-        )
+        msg = await bot.send_message(callback.from_user.id, "🔗 <b>Düwmeleri goşmak</b> 🔗\n\nFormat: <code>Tekst - https://salgy.com</code>\nHer düwme täze setirde.", reply_markup=back_to_admin_markup)
         await state.update_data(admin_message_id=msg.message_id)
         await state.set_state(AdminStates.waiting_for_channel_mailing_buttons)
     await callback.answer()
-
 
 @router.message(AdminStates.waiting_for_channel_mailing_buttons)
 async def process_channel_mailing_buttons(message: Message, state: FSMContext):
     keyboard = parse_buttons_from_text(message.text)
     if not keyboard:
-        await message.answer("⚠️ Nädogry format! Täzeden synanyşyň.")
-        return
-    
+        return await message.answer("⚠️ Nädogry format! Täzeden synanyşyň.")
     await message.delete()
     fsm_data = await state.get_data()
     mailing_content = fsm_data.get('mailing_content')
-
-    try: await bot.delete_message(message.chat.id, fsm_data.get('admin_message_id'))
+    try:
+        if fsm_data.get('admin_message_id'): await bot.delete_message(message.chat.id, fsm_data.get('admin_message_id'))
     except (TelegramBadRequest, KeyError): pass
-    
     msg_for_broadcast = await bot.send_message(message.chat.id, "⏳...")
     await execute_channel_broadcast(msg_for_broadcast, mailing_content, keyboard)
     await state.clear()
 
-
+# --- CHANNEL MANAGEMENT (GÜNCELLENDİ: Çoklu kanal ekleme ve otomatik isim alma) ---
 @router.callback_query(lambda c: c.data == "add_channel")
 async def process_add_channel_prompt(callback: types.CallbackQuery, state: FSMContext):
     if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    await callback.message.edit_text(
+        return await callback.answer("⛔ Giriş gadagan.", show_alert=True)
+    msg = await callback.message.edit_text(
         "📡 <b>Kanal Goşmak</b> 📡\n\n"
-        "Kanalyň ID-sini giriziň (meselem, <code>@PublicChannel</code>) ýa-da şahsy kanalyň ID-sini (meselem, <code>-1001234567890</code>).\n\n"
-        "<i>Bot, agzalar barada maglumat almak hukugy bilen kanala administrator hökmünde goşulmaly.</i>\n",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")]])
+        "Goşmak isleýän kanallaryňyzyň ID'lerini ýa-da ulanyjy adlaryny (<code>@username</code>) <b>virgül (,)</b> bilen aýryp ýazyň.\n\n"
+        "<b>Meselem:</b> <code>@kanal1, @kanal2, -100123456789</code>\n\n"
+        "<i>Bot ähli kanallarda administrator bolmaly we adyny awtomatiki alar.</i>",
+        reply_markup=back_to_admin_markup
     )
-    await state.update_data(admin_message_id=callback.message.message_id, admin_chat_id=callback.message.chat.id)
+    await state.update_data(admin_message_id=msg.message_id, admin_chat_id=msg.chat.id)
     await state.set_state(AdminStates.waiting_for_channel_id)
     await callback.answer()
 
-
 @router.message(AdminStates.waiting_for_channel_id)
-async def process_channel_id(message: types.Message, state: FSMContext):
+async def process_channel_id_and_save(message: types.Message, state: FSMContext):
     if not await is_user_admin_in_db(message.from_user.id): return
-    channel_id_input = message.text.strip()
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
+    
+    # Virgül veya boşluklara göre ayır, boş elemanları temizle
+    channel_inputs = [ch.strip() for ch in message.text.replace(' ', ',').split(',') if ch.strip()]
+    await message.delete()
 
     fsm_data = await state.get_data()
     admin_message_id = fsm_data.get('admin_message_id')
     admin_chat_id = fsm_data.get('admin_chat_id')
-    original_prompt_id = (
-        "📡 <b>Kanal Goşmak: ID</b> 📡\n\n"
-        "Kanalyň ID-sini giriziň (<code>@PublicChannel</code> ýa-da <code>-100...</code>).\n"
-        "<i>Bot kanalda administrator bolmaly.</i>"
-    )
-    cancel_button_row = [InlineKeyboardButton(text="⬅️ Ýatyr we yzyna", callback_data="admin_panel_main")]
+    
+    if not admin_message_id or not channel_inputs:
+        await bot.send_message(message.chat.id, "⚠️ Ýalňyşlyk ýa-da boş giriş. Admin panelden täzeden synanyşyň.", reply_markup=create_admin_keyboard(message.from_user.id))
+        return await state.clear()
 
-    if not admin_message_id or not admin_chat_id:
-        await bot.send_message(message.chat.id, "⚠️ Ýagdaý ýalňyşlygy. Admin panelden täzeden synanyşyň.", reply_markup=create_admin_keyboard(message.from_user.id))
-        await state.clear()
-        return
+    await bot.edit_message_text("⏳ Kanallar barlanýar we goşulýar...", chat_id=admin_chat_id, message_id=admin_message_id)
+    
+    success_list = []
+    fail_list = []
 
-    if not (channel_id_input.startswith('@') or (channel_id_input.startswith('-100') and channel_id_input[1:].replace('-', '', 1).isdigit())):
-        await bot.edit_message_text(
-            f"⚠️ <b>Ýalňyşlyk:</b> Nädogry kanal ID formaty.\n\n{original_prompt_id}",
-            chat_id=admin_chat_id, message_id=admin_message_id,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row])
-        )
-        return
+    for channel_id_input in channel_inputs:
+        try:
+            # Bu satır hem @username hem de ID ile kanal bilgilerini çeker
+            chat_obj = await bot.get_chat(channel_id_input)
+            # Bu satır kanalın resmi adını alır
+            channel_name = chat_obj.title
+            
+            bot_member = await bot.get_chat_member(chat_id=chat_obj.id, user_id=bot.id)
+            if bot_member.status not in ['administrator', 'creator']:
+                fail_list.append(f"{channel_id_input} (Bot admin däl)")
+                continue
 
-    channels_in_db = await get_channels_from_db()
-    if any(str(ch['id']) == str(channel_id_input) for ch in channels_in_db):
-        await bot.edit_message_text(f"⚠️ Bu kanal (<code>{channel_id_input}</code>) eýýäm sanawda bar.\n\n{original_prompt_id}", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row]))
-        return
-
-    try:
-        chat_to_check_str = channel_id_input
-        chat_to_check = int(chat_to_check_str) if not chat_to_check_str.startswith('@') else chat_to_check_str
+            success = await add_channel_to_db(str(chat_obj.id), channel_name)
+            if success:
+                success_list.append(f"{channel_name} (<code>{str(chat_obj.id)}</code>)")
+            else:
+                fail_list.append(f"{channel_name} (Eýýäm bar)")
         
-        bot_member = await bot.get_chat_member(chat_id=chat_to_check, user_id=bot.id)
-        if bot_member.status not in ['administrator', 'creator']:
-            await bot.edit_message_text(
-                "⚠️ <b>Ýalňyşlyk:</b> Bot bu kanalyň administratory däl (ýa-da gatnaşyjylar barada maglumat almak hukugy ýok).\n"
-                "Haýyş edýäris, boty kanala zerur hukuklar bilen administrator hökmünde goşuň we täzeden synanyşyň.",
-                chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup
-            )
-            await state.clear()
-            return
-    except ValueError:
-        await bot.edit_message_text(
-            f"⚠️ <b>Ýalňyşlyk:</b> Şahsy kanalyň ID-si san bolmaly (meselem, <code>-1001234567890</code>).\n\n{original_prompt_id}",
-            chat_id=admin_chat_id, message_id=admin_message_id,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row])
-        )
-        return
-    except TelegramBadRequest as e:
-        logging.error(f"TelegramBadRequest при проверке статуса бота в канале {channel_id_input}: {e}")
-        error_detail = str(e)
-        specific_guidance = ""
-        if "member list is inaccessible" in error_detail.lower():
-            specific_guidance = ("<b>Maslahat:</b> Botuň 'Çaty dolandyryp bilmek' ýa-da ş.m., gatnaşyjylaryň sanawyny almaga mümkinçilik berýän hukugynyň bardygyna göz ýetiriň. Käbir ýagdaýlarda, eger kanal çat bilen baglanyşykly bolsa, hukuklar miras alnyp bilner.")
-        elif "chat not found" in error_detail.lower():
-            specific_guidance = "<b>Maslahat:</b> Kanal ID-siniň dogry girizilendigine we kanalyň bardygyna göz ýetiriň. Jemgyýetçilik kanallary üçin @username, şahsy kanallar üçin bolsa sanly ID ( -100 bilen başlaýan) ulanyň."
-        elif "bot is not a member of the channel" in error_detail.lower() or "user not found" in error_detail.lower():
-             specific_guidance = "<b>Maslahat:</b> Bot görkezilen kanalyň agzasy däl. Haýyş edýäris, ilki boty kanala goşuň."
-        await bot.edit_message_text(
-            f"⚠️ <b>Botyň kanaldaky ýagdaýyny barlamakda ýalňyşlyk:</b>\n<code>{error_detail}</code>\n\n"
-            f"{specific_guidance}\n\n"
-            "ID-niň dogrudygyny, botyň kanala goşulandygyny we zerur administrator hukuklarynyň bardygyny barlaň.",
-            chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup
-        )
-        await state.clear()
-        return
-    except Exception as e:
-        logging.error(f"ýalňyşlyk {channel_id_input}: {e}")
-        await bot.edit_message_text(
-            f"⚠️ <b>Botyň kanaldaky ýagdaýyny barlamakda garaşylmadyk ýalňyşlyk:</b> <code>{e}</code>.\n"
-            "ID-niň dogrudygyny, botyň kanala goşulandygyny we administrator hukuklarynyň bardygyny barlaň.",
-            chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup
-        )
-        await state.clear()
-        return
+        except Exception as e:
+            logging.error(f"Error getting channel info for {channel_id_input}: {e}")
+            fail_list.append(f"{channel_id_input} (Tapylmady/Ýalňyşlyk)")
+        
+        await asyncio.sleep(0.3) # Rate limit'e takılmamak için bekleme
 
-    await state.update_data(channel_id=channel_id_input)
-    await bot.edit_message_text(
-        "✏️ Indi bu kanal üçin <b>görkezilýän ady</b> giriziň (meselem, <i>TKM VPNLAR</i>):",
-        chat_id=admin_chat_id, message_id=admin_message_id,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row])
-    )
-    await state.set_state(AdminStates.waiting_for_channel_name)
+    report_text = "✅ <b>Netije:</b>\n\n"
+    if success_list:
+        report_text += "<b>Goşulanlar:</b>\n" + "\n".join(f"▫️ {s}" for s in success_list) + "\n\n"
+    if fail_list:
+        report_text += "<b>Goşulmadyklar:</b>\n" + "\n".join(f"▪️ {f}" for f in fail_list)
 
-
-@router.message(AdminStates.waiting_for_channel_name)
-async def save_channel(message: types.Message, state: FSMContext):
-    if not await is_user_admin_in_db(message.from_user.id): return
-    channel_name = message.text.strip()
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
-
-    fsm_data = await state.get_data()
-    admin_message_id = fsm_data.get('admin_message_id')
-    admin_chat_id = fsm_data.get('admin_chat_id')
-    channel_id_str = fsm_data.get('channel_id')
-    original_prompt_name = "✏️ Kanal üçin <b>görkezilýän ady</b> giriziň (meselem, <i>Tehnologiýa Habarlary</i>):"
-    cancel_button_row = [InlineKeyboardButton(text="⬅️ Ýatyr we yzyna", callback_data="admin_panel_main")]
-
-    if not all([admin_message_id, admin_chat_id, channel_id_str]):
-        err_msg_text = "⚠️ Ýagdaý ýalňyşlygy (zerur maglumatlar ýok). Kanaly täzeden goşmagy synanyşyň."
-        if admin_message_id and admin_chat_id:
-            try:
-                await bot.edit_message_text(err_msg_text, chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
-            except TelegramBadRequest:
-                 await bot.send_message(admin_chat_id, err_msg_text, reply_markup=back_to_admin_markup)
-        else:
-            await bot.send_message(message.chat.id, err_msg_text, reply_markup=create_admin_keyboard(message.from_user.id))
-        await state.clear()
-        return
-
-    if not channel_name:
-        await bot.edit_message_text(f"⚠️ Kanal ady boş bolup bilmez.\n\n{original_prompt_name}", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row]))
-        return
-
-    success = await add_channel_to_db(channel_id_str, channel_name)
-    if success:
-        await bot.edit_message_text(f"✅ <b>{channel_name}</b> kanaly (<code>{channel_id_str}</code>) üstünlikli goşuldy!", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
-    else:
-        await bot.edit_message_text(f"⚠️ <b>{channel_name}</b> kanalyny (<code>{channel_id_str}</code>) goşmak başartmady. Mümkin, ol eýýäm bar ýa-da maglumatlar bazasynda ýalňyşlyk boldy.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
+    await bot.edit_message_text(report_text, chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
     await state.clear()
 
 
 @router.callback_query(lambda c: c.data == "delete_channel")
 async def process_delete_channel_prompt(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    
+    if not await is_user_admin_in_db(callback.from_user.id): return
     channels = await get_channels_from_db()
-
     if not channels:
-        await callback.message.edit_text("🗑️ Kanallaryň sanawy boş. Pozmak üçin hiç zat ýok.", reply_markup=back_to_admin_markup)
-        await callback.answer()
-        return
-
-    keyboard_buttons = [
-        [InlineKeyboardButton(text=f"{channel['name']} ({channel['id']})", callback_data=f"del_channel:{channel['id']}")] for channel in channels
-    ]
+        return await callback.message.edit_text("🗑️ Kanallaryň sanawy boş.", reply_markup=back_to_admin_markup)
+    keyboard_buttons = [[InlineKeyboardButton(text=f"{ch['name']} ({ch['id']})", callback_data=f"del_channel:{ch['id']}")] for ch in channels]
     keyboard_buttons.append([InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")])
-
-    await callback.message.edit_text("🔪 <b>Kanal Pozmak</b> 🔪\n\nSanawdan pozmak üçin kanaly saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
+    await callback.message.edit_text("🔪 <b>Kanal Pozmak</b> 🔪\n\nPozmak üçin kanaly saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
     await callback.answer()
-
 
 @router.callback_query(lambda c: c.data == "admin_panel_main")
 async def back_to_admin_panel(callback: types.CallbackQuery, state: FSMContext):
     if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    
+        return await callback.answer("⛔ Giriş gadagan.", show_alert=True)
     admin_reply_markup = create_admin_keyboard(callback.from_user.id)
     try:
-        await callback.message.edit_text(
-            "⚙️ <b>Admin-panel</b>\n\nBir hereket saýlaň:",
-            reply_markup=admin_reply_markup
-        )
+        await callback.message.edit_text("⚙️ <b>Admin-panel</b>\n\nBir hereket saýlaň:", reply_markup=admin_reply_markup)
     except TelegramBadRequest:
-        await callback.message.answer(
-             "⚙️ <b>Admin-panel</b>\n\nBir hereket saýlaň:",
-            reply_markup=admin_reply_markup
-        )
-        try:
-            await callback.message.delete()
-        except TelegramBadRequest:
-            pass
+        await callback.message.delete()
+        await callback.message.answer("⚙️ <b>Admin-panel</b>\n\nBir hereket saýlaň:", reply_markup=admin_reply_markup)
     await state.clear()
     await callback.answer()
 
-
 @router.callback_query(lambda c: c.data.startswith("del_channel:"))
 async def confirm_delete_channel(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    channel_id_to_delete_str = callback.data.split(":", 1)[1]
-
-    deleted = await delete_channel_from_db(channel_id_to_delete_str)
-
-    if deleted:
-        await callback.message.edit_text(f"🗑️ Kanal (<code>{channel_id_to_delete_str}</code>) üstünlikli pozuldy.", reply_markup=back_to_admin_markup)
+    if not await is_user_admin_in_db(callback.from_user.id): return
+    channel_id_to_delete = callback.data.split(":", 1)[1]
+    if await delete_channel_from_db(channel_id_to_delete):
+        await callback.message.edit_text(f"🗑️ Kanal (<code>{channel_id_to_delete}</code>) üstünlikli pozuldy.", reply_markup=back_to_admin_markup)
         await callback.answer("Kanal pozuldy", show_alert=False)
     else:
         await callback.message.edit_text("⚠️ Kanal tapylmady ýa-da pozmakda ýalňyşlyk ýüze çykdy.", reply_markup=back_to_admin_markup)
         await callback.answer("Kanal tapylmady ýa-da ýalňyşlyk", show_alert=True)
 
-
+# --- ADDLIST MANAGEMENT ---
 @router.callback_query(lambda c: c.data == "add_addlist")
 async def process_add_addlist_prompt(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    await callback.message.edit_text(
-        "🔗 <b>addlist Goşmak (Addlist)</b> 🔗\n\n"
-        "addlistnyň URL-ni giriziň (meselem, <code>https://t.me/addlist/xxxxxx</code>).\n",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")]])
-    )
-    await state.update_data(admin_message_id=callback.message.message_id, admin_chat_id=callback.message.chat.id)
+    if not await is_user_admin_in_db(callback.from_user.id): return
+    msg = await callback.message.edit_text("🔗 <b>addlist Goşmak</b> 🔗\n\nURL-ni giriziň (<code>https://t.me/addlist/xxxx</code>):", reply_markup=back_to_admin_markup)
+    await state.update_data(admin_message_id=msg.message_id, admin_chat_id=msg.chat.id)
     await state.set_state(AdminStates.waiting_for_addlist_url)
     await callback.answer()
-
 
 @router.message(AdminStates.waiting_for_addlist_url)
 async def process_addlist_url(message: types.Message, state: FSMContext):
     if not await is_user_admin_in_db(message.from_user.id): return
     addlist_url = message.text.strip()
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
+    await message.delete()
 
     fsm_data = await state.get_data()
     admin_message_id = fsm_data.get('admin_message_id')
     admin_chat_id = fsm_data.get('admin_chat_id')
-    original_prompt_url = "🔗 <b>addlist Goşmak: URL</b> 🔗\n\naddlistnyň URL-ni giriziň (<code>https://t.me/addlist/xxxx</code>)."
-    cancel_button_row = [InlineKeyboardButton(text="⬅️ Ýatyr we yzyna", callback_data="admin_panel_main")]
-
-    if not admin_message_id or not admin_chat_id:
-        await bot.send_message(message.chat.id, "⚠️ Ýagdaý ýalňyşlygy. Täzeden synanyşyň.", reply_markup=create_admin_keyboard(message.from_user.id))
-        await state.clear()
-        return
 
     if not addlist_url.startswith("https://t.me/addlist/"):
-        await bot.edit_message_text(
-            f"⚠️ <b>Ýalňyşlyk:</b> URL <code>https://t.me/addlist/</code> bilen başlamaly.\n\n{original_prompt_url}",
-            chat_id=admin_chat_id, message_id=admin_message_id,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row])
-        )
-        return
-
+        return await bot.edit_message_text(f"⚠️ <b>Ýalňyşlyk:</b> URL <code>https://t.me/addlist/</code> bilen başlamaly.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
+    
     addlists_in_db = await get_addlists_from_db()
     if any(al['url'] == addlist_url for al in addlists_in_db):
-        await bot.edit_message_text(f"⚠️ Bu addlist (<code>{addlist_url}</code>) eýýäm goşulan.\n\n{original_prompt_url}", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row]))
-        return
-
+        return await bot.edit_message_text(f"⚠️ Bu addlist (<code>{addlist_url}</code>) eýýäm goşulan.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
+    
     await state.update_data(addlist_url=addlist_url)
-    await bot.edit_message_text(
-        "✏️ Indi bu addlist üçin <b>görkezilýän ady</b> giriziň (meselem, <i>Peýdaly Kanallar</i>):",
-        chat_id=admin_chat_id, message_id=admin_message_id,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row])
-    )
+    await bot.edit_message_text("✏️ Indi bu addlist üçin <b>görkezilýän ady</b> giriziň:", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
     await state.set_state(AdminStates.waiting_for_addlist_name)
-
 
 @router.message(AdminStates.waiting_for_addlist_name)
 async def save_addlist_name(message: types.Message, state: FSMContext):
     if not await is_user_admin_in_db(message.from_user.id): return
     addlist_name = message.text.strip()
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
+    await message.delete()
 
     fsm_data = await state.get_data()
     admin_message_id = fsm_data.get('admin_message_id')
     admin_chat_id = fsm_data.get('admin_chat_id')
     addlist_url = fsm_data.get('addlist_url')
-    original_prompt_name = "✏️ addlist üçin <b>görkezilýän ady</b> giriziň (meselem, <i>Peýdaly Kanallar</i>):"
-    cancel_button_row = [InlineKeyboardButton(text="⬅️ Ýatyr we yzyna", callback_data="admin_panel_main")]
-
-    if not all([admin_message_id, admin_chat_id, addlist_url]):
-        err_msg_text = "⚠️ Ýagdaý ýalňyşlygy (URL ýok). addlistny täzeden goşmagy synanyşyň."
-        if admin_message_id and admin_chat_id:
-             try:
-                await bot.edit_message_text(err_msg_text, chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
-             except TelegramBadRequest:
-                await bot.send_message(admin_chat_id, err_msg_text, reply_markup=back_to_admin_markup)
-        else:
-            await bot.send_message(message.chat.id, err_msg_text, reply_markup=create_admin_keyboard(message.from_user.id))
-        await state.clear()
-        return
 
     if not addlist_name:
-        await bot.edit_message_text(f"⚠️ addlist ady boş bolup bilmez.\n\n{original_prompt_name}", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row]))
-        return
+        return await bot.edit_message_text(f"⚠️ addlist ady boş bolup bilmez.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
 
-    success = await add_addlist_to_db(addlist_name, addlist_url)
-    if success:
-        await bot.edit_message_text(f"✅ <b>{addlist_name}</b> addlistsy (<code>{addlist_url}</code>) üstünlikli goşuldy.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
+    if await add_addlist_to_db(addlist_name, addlist_url):
+        await bot.edit_message_text(f"✅ <b>{addlist_name}</b> addlistsy üstünlikli goşuldy.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
     else:
-        await bot.edit_message_text(f"⚠️ <b>{addlist_name}</b> addlistsy (<code>{addlist_url}</code>) goşmak başartmady. Mümkin, ol eýýäm bar ýa-da maglumatlar bazasynda ýalňyşlyk boldy.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
+        await bot.edit_message_text(f"⚠️ <b>{addlist_name}</b> addlistsy goşmak başartmady.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
     await state.clear()
-
 
 @router.callback_query(lambda c: c.data == "delete_addlist")
 async def process_delete_addlist_prompt(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    
+    if not await is_user_admin_in_db(callback.from_user.id): return
     addlists = await get_addlists_from_db()
-
     if not addlists:
-        await callback.message.edit_text("🗑️ addlistlaryň (Addlists) sanawy boş. Pozmak üçin hiç zat ýok.", reply_markup=back_to_admin_markup)
-        await callback.answer()
-        return
-
-    keyboard_buttons = [
-        [InlineKeyboardButton(text=f"{al['name']} ({al['url'][:30]}...)", callback_data=f"del_addlist_id:{al['db_id']}")]
-        for al in addlists
-    ]
-    keyboard_buttons.append([InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")])
-
-    await callback.message.edit_text("🔪 <b>addlist Pozmak (Addlist)</b> 🔪\n\nPozmak üçin addlist saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
+        return await callback.message.edit_text("🗑️ addlistlaryň sanawy boş.", reply_markup=back_to_admin_markup)
+    
+    keyboard = [[InlineKeyboardButton(text=f"{al['name']}", callback_data=f"del_addlist_id:{al['db_id']}")] for al in addlists]
+    keyboard.append([InlineKeyboardButton(text="⬅️ Yza", callback_data="admin_panel_main")])
+    await callback.message.edit_text("🔪 <b>addlist Pozmak</b> 🔪\n\nPozmak üçin saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
-
 
 @router.callback_query(lambda c: c.data.startswith("del_addlist_id:"))
 async def confirm_delete_addlist(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    
+    if not await is_user_admin_in_db(callback.from_user.id): return
     try:
-        addlist_db_id_to_delete = int(callback.data.split(":")[1])
+        addlist_db_id = int(callback.data.split(":")[1])
     except (ValueError, IndexError):
-        await callback.message.edit_text("⚠️ Ýalňyşlyk: Nädogry addlist ID-si.", reply_markup=back_to_admin_markup)
-        await callback.answer("ID ýalňyşlygy", show_alert=True)
-        return
-
-    addlists = await get_addlists_from_db()
-    addlist_to_delete = next((al for al in addlists if al['db_id'] == addlist_db_id_to_delete), None)
-
-    if addlist_to_delete:
-        deleted = await delete_addlist_from_db(addlist_db_id_to_delete)
-        if deleted:
-            await callback.message.edit_text(f"🗑️ <b>{addlist_to_delete['name']}</b> addlistsy üstünlikli pozuldy.", reply_markup=back_to_admin_markup)
-            await callback.answer("addlist pozuldy", show_alert=False)
-        else:
-            await callback.message.edit_text("⚠️ addlistny maglumatlar bazasyndan pozmakda ýalňyşlyk.", reply_markup=back_to_admin_markup)
-            await callback.answer("Pozmak ýalňyşlygy", show_alert=True)
+        return await callback.message.edit_text("⚠️ Ýalňyşlyk: Nädogry ID.", reply_markup=back_to_admin_markup)
+    
+    if await delete_addlist_from_db(addlist_db_id):
+        await callback.message.edit_text(f"🗑️ addlist üstünlikli pozuldy.", reply_markup=back_to_admin_markup)
+        await callback.answer("addlist pozuldy", show_alert=False)
     else:
-        await callback.message.edit_text("⚠ addlist tapylmady ýa-da eýýäm pozuldy.", reply_markup=back_to_admin_markup)
-        await callback.answer("addlist tapylmady", show_alert=True)
+        await callback.message.edit_text("⚠️ addlist pozmakda ýalňyşlyk.", reply_markup=back_to_admin_markup)
+        await callback.answer("Pozmak ýalňyşlygy", show_alert=True)
 
+# --- VPN MANAGEMENT ---
 @router.callback_query(lambda c: c.data == "add_vpn_config")
 async def process_add_vpn_config_prompt(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    await callback.message.edit_text(
-        "🔑 <b>VPN Kody Goşmak</b> 🔑\n\n"
-        "VPN <b>kodyny</b> iberiň. Ol bolşy ýaly saklanar we ulanyja <code>Şeýle görnuşde</code> berler.\n",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")]])
-    )
-    await state.update_data(admin_message_id=callback.message.message_id, admin_chat_id=callback.message.chat.id)
+    if not await is_user_admin_in_db(callback.from_user.id): return
+    msg = await callback.message.edit_text("🔑 <b>VPN Kody Goşmak</b> 🔑\n\nVPN <b>kodyny</b> iberiň.", reply_markup=back_to_admin_markup)
+    await state.update_data(admin_message_id=msg.message_id, admin_chat_id=msg.chat.id)
     await state.set_state(AdminStates.waiting_for_vpn_config)
     await callback.answer()
-
 
 @router.message(AdminStates.waiting_for_vpn_config)
 async def save_vpn_config(message: types.Message, state: FSMContext):
     if not await is_user_admin_in_db(message.from_user.id): return
     vpn_config_text = message.text.strip()
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
+    await message.delete()
 
     fsm_data = await state.get_data()
     admin_message_id = fsm_data.get('admin_message_id')
     admin_chat_id = fsm_data.get('admin_chat_id')
-    original_prompt_vpn = "🔑 <b>VPN kodyny Goşmak: Kodyň Teksti</b> 🔑\n\nVPN kodyny iberiň."
-    cancel_button_row = [InlineKeyboardButton(text="⬅️ Ýatyr we yzyna", callback_data="admin_panel_main")]
-
-    if not admin_message_id or not admin_chat_id:
-        await bot.send_message(message.chat.id, "⚠️ Ýagdaý ýalňyşlygy. Täzeden synanyşyň.", reply_markup=create_admin_keyboard(message.from_user.id))
-        await state.clear()
-        return
 
     if not vpn_config_text:
-        await bot.edit_message_text(f"⚠️ VPN kody boş bolup bilmez.\n\n{original_prompt_vpn}", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row]))
-        return
+        return await bot.edit_message_text("⚠️ VPN kody boş bolup bilmez.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
 
-    success = await add_vpn_config_to_db(vpn_config_text)
-    if success:
+    if await add_vpn_config_to_db(vpn_config_text):
         await bot.edit_message_text("✅ VPN kody üstünlikli goşuldy.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
     else:
-        await bot.edit_message_text("⚠️ VPN kodyny goşmak başartmady. Mümkin, ol eýýäm bar ýa-da maglumatlar bazasynda ýalňyşlyk boldy.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
+        await bot.edit_message_text("⚠️ VPN kodyny goşmak başartmady. Mümkin ol eýýäm bar.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
     await state.clear()
 
 @router.callback_query(lambda c: c.data == "delete_vpn_config")
 async def process_delete_vpn_config_prompt(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    
+    if not await is_user_admin_in_db(callback.from_user.id): return
     vpn_configs = await get_vpn_configs_from_db()
-
     if not vpn_configs:
-        await callback.message.edit_text("🗑️ VPN kody sanawy boş. Pozmak üçin hiç zat ýok.", reply_markup=back_to_admin_markup)
-        await callback.answer()
-        return
-
-    keyboard_buttons = [
-        [InlineKeyboardButton(text=f"Konfig #{i+1} (<code>{item['config_text'][:25]}...</code>)", callback_data=f"del_vpn_id:{item['db_id']}")] 
-        for i, item in enumerate(vpn_configs)
-    ]
-    keyboard_buttons.append([InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")])
-
-    await callback.message.edit_text("🔪 <b>VPN Kodyny Pozmak</b> 🔪\n\nPozmak üçin kody saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
+        return await callback.message.edit_text("🗑️ VPN kody sanawy boş.", reply_markup=back_to_admin_markup)
+    
+    keyboard = [[InlineKeyboardButton(text=f"Kod #{i+1} (<code>{item['config_text'][:20]}...</code>)", callback_data=f"del_vpn_id:{item['db_id']}")] for i, item in enumerate(vpn_configs)]
+    keyboard.append([InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")])
+    await callback.message.edit_text("🔪 <b>VPN Kodyny Pozmak</b> 🔪\n\nPozmak üçin kody saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
-
 
 @router.callback_query(lambda c: c.data.startswith("del_vpn_id:"))
 async def confirm_delete_vpn_config(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    
+    if not await is_user_admin_in_db(callback.from_user.id): return
     try:
         config_db_id = int(callback.data.split(":")[1])
     except (ValueError, IndexError):
-        await callback.message.edit_text("⚠️ Ýalňyşlyk: Nädogry kod ID-si.", reply_markup=back_to_admin_markup)
-        await callback.answer("ID ýalňyşlygy", show_alert=True)
-        return
+        return await callback.message.edit_text("⚠️ Ýalňyşlyk: Nädogry kod ID-si.", reply_markup=back_to_admin_markup)
     
-    all_configs = await get_vpn_configs_from_db()
-    config_to_delete = next((c for c in all_configs if c['db_id'] == config_db_id), None)
-    
-    deleted = await delete_vpn_config_from_db(config_db_id)
-    if deleted:
-        preview = f"(<code>...{config_to_delete['config_text'][:20]}...</code>)" if config_to_delete else ""
-        await callback.message.edit_text(f"🗑️ VPN kody {preview} üstünlikli pozuldy.", reply_markup=back_to_admin_markup)
+    if await delete_vpn_config_from_db(config_db_id):
+        await callback.message.edit_text("🗑️ VPN kody üstünlikli pozuldy.", reply_markup=back_to_admin_markup)
         await callback.answer("VPN Kody pozuldy", show_alert=False)
     else:
-        await callback.message.edit_text("⚠️ Kod tapylmady, eýýäm pozuldy ýa-da maglumatlar bazasynda ýalňyşlyk boldy.", reply_markup=back_to_admin_markup)
+        await callback.message.edit_text("⚠️ Kod tapylmady ýa-da pozmakda ýalňyşlyk boldy.", reply_markup=back_to_admin_markup)
         await callback.answer("Kod tapylmady/ýalňyşlyk", show_alert=True)
 
+# --- WELCOME MESSAGE ---
 @router.callback_query(lambda c: c.data == "change_welcome")
 async def process_change_welcome_prompt(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin_in_db(callback.from_user.id):
-        await callback.answer("⛔ Giriş gadagan.", show_alert=True)
-        return
-    
+    if not await is_user_admin_in_db(callback.from_user.id): return
     current_welcome = await get_setting_from_db("welcome_message", "<i>Häzirki Başlangyç haty ýok.</i>")
-    await callback.message.edit_text(
+    msg = await callback.message.edit_text(
         f"📝 <b>Başlangyç hatyny Üýtgetmek</b> 📝\n\n"
-        f"Häzirki başlangyç haty:\n"
-        f"<blockquote>{current_welcome}</blockquote>\n"
-        f"Täze başlangyç hatyny giriziň."
-        f"Formatlamak üçin HTML teglerini ulanyp bilersiňiz (meselem, <b>galyň</b>, <i>kursiw</i>, <a href='https://example.com'>salgy</a>, <code>kod</code>).\n",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")]])
+        f"Häzirki hat:\n<blockquote>{current_welcome}</blockquote>\n"
+        f"Täze başlangyç hatyny giriziň (HTML goldanýar).",
+        reply_markup=back_to_admin_markup
     )
-    await state.update_data(admin_message_id=callback.message.message_id, admin_chat_id=callback.message.chat.id)
+    await state.update_data(admin_message_id=msg.message_id, admin_chat_id=msg.chat.id)
     await state.set_state(AdminStates.waiting_for_welcome_message)
     await callback.answer()
-
 
 @router.message(AdminStates.waiting_for_welcome_message)
 async def save_welcome_message(message: types.Message, state: FSMContext):
     if not await is_user_admin_in_db(message.from_user.id): return
     new_welcome_message = message.html_text
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
+    await message.delete()
 
     fsm_data = await state.get_data()
     admin_message_id = fsm_data.get('admin_message_id')
     admin_chat_id = fsm_data.get('admin_chat_id')
-    cancel_button_row = [InlineKeyboardButton(text="⬅️ Ýatyr we yzyna", callback_data="admin_panel_main")]
-
-    if not admin_message_id or not admin_chat_id:
-        await bot.send_message(message.chat.id, "⚠️ Ýagdaý ýalňyşlygy. Täzeden synanyşyň.", reply_markup=create_admin_keyboard(message.from_user.id))
-        await state.clear()
-        return
 
     if not new_welcome_message or not new_welcome_message.strip():
-        current_welcome = await get_setting_from_db("welcome_message", "<i>başlangyç haty ýok.</i>")
-        await bot.edit_message_text(
-            f"⚠️ <b>Ýalňyşlyk:</b> Başlangyç haty boş bolup bilmez.\n"
-            f"Häzirki Başlangyç haty:\n<blockquote>{current_welcome}</blockquote>\n\n"
-            f"Täze başlangyç hatyny giriziň ýa-da amaly ýatyryň.",
-            chat_id=admin_chat_id, message_id=admin_message_id,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row]),
-        )
-        return
+        return await bot.edit_message_text("⚠️ Başlangyç haty boş bolup bilmez.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
 
     await save_setting_to_db('welcome_message', new_welcome_message)
     await bot.edit_message_text("✅ Başlangyç hat üstünlikli täzelendi!", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
     await state.clear()
 
-
+# --- ADMIN MANAGEMENT (YENİ EKLENEN "list_admins" ile) ---
 @router.callback_query(lambda c: c.data == "add_admin")
 async def add_admin_prompt(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != SUPER_ADMIN_ID:
-        await callback.answer("⛔ Bu funksiýa diňe baş admin üçin elýeterlidir.", show_alert=True)
-        return
-    await callback.message.edit_text(
-        "👮 <b>Admin Goşmak</b> 👮\n\n"
-        "Admin bellemek isleýän ulanyjyňyzyň Telegram User ID-sini giriziň.\n"
-        "<i>User ID-ni @userinfobot ýa-da @getmyid_bot ýaly botlardan bilip bilersiňiz.</i>\n",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")]])
-    )
-    await state.update_data(admin_message_id=callback.message.message_id, admin_chat_id=callback.message.chat.id)
+        return await callback.answer("⛔ Diňe baş admin üçin elýeterli.", show_alert=True)
+    msg = await callback.message.edit_text("👮 <b>Admin Goşmak</b> 👮\n\nUlanyjynyň Telegram ID-sini giriziň.", reply_markup=back_to_admin_markup)
+    await state.update_data(admin_message_id=msg.message_id, admin_chat_id=msg.chat.id)
     await state.set_state(AdminStates.waiting_for_admin_id_to_add)
     await callback.answer()
-
 
 @router.message(AdminStates.waiting_for_admin_id_to_add)
 async def process_add_admin_id(message: types.Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID: return
-    new_admin_id_str = message.text.strip()
-    try:
-        await message.delete()
-    except TelegramBadRequest:
-        pass
-
+    await message.delete()
     fsm_data = await state.get_data()
     admin_message_id = fsm_data.get('admin_message_id')
     admin_chat_id = fsm_data.get('admin_chat_id')
-    original_prompt_admin_id = (
-        "👮 <b>Admin Goşmak: User ID</b> 👮\n\n"
-        "Telegram User ID-ni (san) giriziň.\n"
-        "<i>User ID-ni @userinfobot ýaly botlardan bilip bilersiňiz.</i>"
-    )
-    cancel_button_row = [InlineKeyboardButton(text="⬅️ Ýatyr we yzyna", callback_data="admin_panel_main")]
-
-    if not admin_message_id or not admin_chat_id:
-        await bot.send_message(message.chat.id, "⚠️ Ýagdaý ýalňyşlygy. Täzeden synanyşyň.", reply_markup=create_admin_keyboard(message.from_user.id))
-        await state.clear()
-        return
-
     try:
-        new_admin_id = int(new_admin_id_str)
+        new_admin_id = int(message.text.strip())
     except ValueError:
-        await bot.edit_message_text(f"⚠️ <b>Ýalňyşlyk:</b> User ID san bolmaly.\n\n{original_prompt_admin_id}", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row]))
-        return
+        return await bot.edit_message_text("⚠️ <b>Ýalňyşlyk:</b> User ID san bolmaly.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
 
     if new_admin_id == SUPER_ADMIN_ID:
-        await bot.edit_message_text(f"⚠️ Baş admin eýýäm ähli hukuklara eýe.\n\n{original_prompt_admin_id}", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row]))
-        return
+        return await bot.edit_message_text("⚠️ Baş admin eýýäm ähli hukuklara eýe.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
 
-    current_admins = await get_admins_from_db()
-    if new_admin_id in current_admins:
-        await bot.edit_message_text(f"⚠️ <code>{new_admin_id}</code> ID-li ulanyjy eýýäm admin.\n\n{original_prompt_admin_id}", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[cancel_button_row]))
-        return
+    if new_admin_id in await get_admins_from_db():
+        return await bot.edit_message_text(f"⚠️ <code>{new_admin_id}</code> ID-li ulanyjy eýýäm admin.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
 
-    success = await add_admin_to_db(new_admin_id)
-    if success:
-        await bot.edit_message_text(f"✅ <code>{new_admin_id}</code> ID-li ulanyjy üstünlikli admin bellenildi!", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
+    if await add_admin_to_db(new_admin_id):
+        await bot.edit_message_text(f"✅ <code>{new_admin_id}</code> ID-li ulanyjy admin bellenildi!", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
     else:
-        await bot.edit_message_text(f"⚠️ <code>{new_admin_id}</code> ID-li admini goşmak başartmady. Maglumatlar bazasy ýalňyşlygy.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
+        await bot.edit_message_text(f"⚠️ <code>{new_admin_id}</code> ID-li admini goşmak başartmady.", chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=back_to_admin_markup)
     await state.clear()
-
 
 @router.callback_query(lambda c: c.data == "delete_admin")
 async def delete_admin_prompt(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != SUPER_ADMIN_ID:
-        await callback.answer("⛔ Bu funksiýa diňe baş admin üçin elýeterlidir.", show_alert=True)
-        return
-
+        return await callback.answer("⛔ Diňe baş admin üçin elýeterli.", show_alert=True)
+    
     admins_in_db = await get_admins_from_db()
-
     if not admins_in_db:
-        await callback.message.edit_text("🚫 Goşmaça adminleriň sanawy boş. Pozmak üçin hiç kim ýok.", reply_markup=back_to_admin_markup)
-        await callback.answer()
-        return
+        return await callback.message.edit_text("🚫 Goşmaça admin sanawy boş.", reply_markup=back_to_admin_markup)
 
-    keyboard_buttons = []
+    admin_details = []
     for admin_id in admins_in_db:
         try:
             user = await bot.get_chat(admin_id)
-            display_name = f"{user.full_name} (<code>{admin_id}</code>)" if user.full_name else f"Admin (<code>{admin_id}</code>)"
+            admin_details.append({'id': admin_id, 'name': user.full_name, 'username': user.username})
         except Exception:
-            display_name = f"Admin (<code>{admin_id}</code>) - <i>ady almak başartmady</i>"
-        keyboard_buttons.append([InlineKeyboardButton(text=display_name, callback_data=f"del_admin_id:{admin_id}")])
+            admin_details.append({'id': admin_id, 'name': f"Unknown ({admin_id})", 'username': None})
+    
+    admin_details.sort(key=lambda x: x['name'])
 
-    keyboard_buttons.append([InlineKeyboardButton(text="⬅️ Admin menýusyna gaýt", callback_data="admin_panel_main")])
-    await callback.message.edit_text("🔪 <b>Admin Pozmak</b> 🔪\n\nHukuklaryny yzyna almak üçin admini saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
+    keyboard_buttons = []
+    for admin in admin_details:
+        display_name = f"{admin['name']} (@{admin['username']})" if admin['username'] else f"{admin['name']} ({admin['id']})"
+        keyboard_buttons.append([InlineKeyboardButton(text=display_name, callback_data=f"del_admin_id:{admin['id']}")])
+    
+    keyboard_buttons.append([InlineKeyboardButton(text="⬅️ Yza", callback_data="admin_panel_main")])
+    await callback.message.edit_text("🔪 <b>Admin Pozmak</b> 🔪\n\nHukuklaryny aýyrmak üçin admini saýlaň:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
+    await callback.answer()
+
+# YENİ EKLENEN FONKSİYON: Adminleri listeler
+@router.callback_query(lambda c: c.data == "list_admins")
+async def list_admins_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != SUPER_ADMIN_ID:
+        return await callback.answer("⛔ Diňe baş admin üçin elýeterli.", show_alert=True)
+    
+    other_admins = await get_admins_from_db()
+    all_admin_ids = [SUPER_ADMIN_ID] + other_admins
+
+    admin_details = []
+    for admin_id in all_admin_ids:
+        try:
+            user = await bot.get_chat(admin_id)
+            role = "👑 Baş Admin" if user.id == SUPER_ADMIN_ID else "👮 Admin"
+            name = user.full_name
+            username = f"@{user.username}" if user.username else "<i>(ýok)</i>"
+            admin_details.append(f"▫️ {name} ({username}) - {role}")
+        except Exception:
+            role = "👑 Baş Admin" if admin_id == SUPER_ADMIN_ID else "👮 Admin"
+            admin_details.append(f"▪️ Näbelli Ulanyjy (ID: <code>{admin_id}</code>) - {role}")
+    
+    if admin_details:
+        message_text = "⚜️ <b>Bot Adminleriniň Sanawy</b> ⚜️\n\n" + "\n".join(admin_details)
+    else:
+        message_text = "🚫 Admin sanawy boş."
+        
+    await callback.message.edit_text(message_text, reply_markup=back_to_admin_markup)
     await callback.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith("del_admin_id:"))
 async def confirm_delete_admin(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != SUPER_ADMIN_ID:
-        await callback.answer("⛔ Bu funksiýa diňe baş admin üçin elýeterlidir.", show_alert=True)
-        return
-
+    if callback.from_user.id != SUPER_ADMIN_ID: return
     try:
         admin_id_to_delete = int(callback.data.split(":")[1])
     except (ValueError, IndexError):
-        await callback.message.edit_text("⚠️ Ýalňyşlyk: Pozmak üçin nädogry admin ID-si.", reply_markup=back_to_admin_markup)
-        await callback.answer("ID ýalňyşlygy", show_alert=True)
-        return
+        return await callback.message.edit_text("⚠️ Ýalňyşlyk: Nädogry admin ID.", reply_markup=back_to_admin_markup)
 
-    deleted = await delete_admin_from_db(admin_id_to_delete)
-    if deleted:
+    if await delete_admin_from_db(admin_id_to_delete):
         await callback.message.edit_text(f"🗑️ <code>{admin_id_to_delete}</code> ID-li admin üstünlikli pozuldy.", reply_markup=back_to_admin_markup)
         await callback.answer("Admin pozuldy", show_alert=False)
     else:
-        await callback.message.edit_text("⚠️ Admin tapylmady, eýýäm pozuldy ýa-da maglumatlar bazasy ýalňyşlygy.", reply_markup=back_to_admin_markup)
+        await callback.message.edit_text("⚠️ Admin tapylmady ýa-da pozmakda ýalňyşlyk boldy.", reply_markup=back_to_admin_markup)
         await callback.answer("Admin tapylmady/ýalňyşlyk", show_alert=True)
 
-
+# --- SUBSCRIPTION CHECK ---
 @router.callback_query(lambda c: c.data == "check_subscription")
 async def process_check_subscription(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    vpn_configs_full = await get_vpn_configs_from_db()
-    vpn_configs_texts = [item['config_text'] for item in vpn_configs_full]
+    vpn_configs = await get_vpn_configs_from_db()
 
-    if not vpn_configs_texts:
-        try:
-            await callback.message.edit_text("😔 Gynansak-da, häzirki wagtda elýeterli VPN kody ýok. Haýyş edýäris, soňrak synanyşyň.")
-        except TelegramBadRequest:
-            await callback.answer(text="😔 Elýeterli VPN kody ýok. Soňrak synanyşyň.", show_alert=True)
-        await state.clear()
-        return
+    if not vpn_configs:
+        await callback.answer("😔 Gynansak-da, häzirki wagtda elýeterli VPN kody ýok.", show_alert=True)
+        return await state.clear()
 
-    user_still_needs_to_subscribe = await has_unsubscribed_channels(user_id)
-    channels_configured = bool(await get_channels_from_db())
-
-    if not user_still_needs_to_subscribe:
-        vpn_config_text = random.choice(vpn_configs_texts)
-        text = "🎉 Siz ähli kanallara agza bolduňyz." if channels_configured else "✨ Agza bolanyňyz üçin sagboluň"
+    unsubscribed_channels = await get_unsubscribed_channels(user_id)
+    
+    if not unsubscribed_channels:
+        vpn_config_text = random.choice(vpn_configs)['config_text']
+        text = "🎉 Siz ähli kanallara agza bolduňyz!"
         try:
             await callback.message.edit_text(
-                f"{text}\n\n"
-                f"🔑 <b>Siziň VPN koduňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>",
+                f"{text}\n\n🔑 <b>Siziň VPN koduňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>",
                 reply_markup=None
             )
-            await callback.answer(text="✅ Agzalyk barlandy!", show_alert=False)
-        except TelegramBadRequest:
-             await callback.answer(text="✅ Agzalyk barlandy!", show_alert=False)
+        except TelegramBadRequest: pass 
+        await callback.answer(text="✅ Agzalyk tassyklandy!", show_alert=False)
         await state.clear()
     else:
-        new_keyboard = await create_subscription_task_keyboard(user_id)
-        welcome_text_db = await get_setting_from_db('welcome_message', "👋 VPN kodyny almak üçin, aşakdaky kanallara agza boluň:")
+        addlists = await get_addlists_from_db()
+        welcome_text = await get_setting_from_db('welcome_message', "👋 <b>Hoş geldiňiz!</b>")
+        
+        tasks_text_list = []
+        keyboard_buttons = []
 
-        message_needs_update = False
-        if callback.message:
-            if (callback.message.html_text != welcome_text_db) or \
-               (new_keyboard != callback.message.reply_markup):
-                 message_needs_update = True
+        for channel in unsubscribed_channels:
+            tasks_text_list.append(f"▫️ <a href=\"https://t.me/{str(channel['id']).lstrip('@')}\">{channel['name']}</a>")
+            keyboard_buttons.append([InlineKeyboardButton(text=f"{channel['name']}", url=f"https://t.me/{str(channel['id']).lstrip('@')}")])
 
-            if message_needs_update:
-                try:
-                    await callback.message.edit_text(welcome_text_db, reply_markup=new_keyboard)
-                except TelegramBadRequest as e:
-                    if "message is not modified" in str(e).lower():
-                        pass
-                    else:
-                        logging.error(f"agzalygy barlanda habary redaktirlemekde ýalňyşlyk: {e}")
-        await callback.answer(
-            text="⚠️ Haýyş edýäris, ähli görkezilen kanallara agza boluň we täzeden synanşyň",
-            show_alert=True
-        )
+        for addlist in addlists:
+            tasks_text_list.append(f"▫️ <a href=\"{addlist['url']}\">{addlist['name']}</a>")
+            keyboard_buttons.append([InlineKeyboardButton(text=f"{addlist['name']}", url=addlist['url'])])
+        
+        full_message = welcome_text + "\n\nHenizem agza bolunmadyk ýerler bar:\n\n" + "\n".join(tasks_text_list)
+        keyboard_buttons.append([InlineKeyboardButton(text="✅ Agza Boldum", callback_data="check_subscription")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
+        try:
+            await callback.message.edit_text(full_message, reply_markup=keyboard, disable_web_page_preview=True)
+        except TelegramBadRequest as e:
+            if "message is not modified" not in str(e).lower():
+                logging.error(f"Error editing message on sub check: {e}")
+        
+        await callback.answer(text="⚠️ Haýyş edýäris, sanawdaky ähli ýerlere agza boluň!", show_alert=True)
 
 async def main():
     global DB_POOL
@@ -1633,7 +1169,7 @@ async def main():
         if DB_POOL:
             logging.info("Successfully connected to PostgreSQL and connection pool created.")
             await init_db(DB_POOL)
-            logging.info("Database initialized (tables created if they didn't exist).")
+            logging.info("Database initialized.")
         else:
             logging.error("Failed to create database connection pool.")
             return
