@@ -321,6 +321,7 @@ def create_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+# --- DÜZELTME: /start komutunun mantığı basitleştirildi ve düzeltildi ---
 @router.message(Command("start"))
 async def start_command(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -335,35 +336,30 @@ async def start_command(message: types.Message, state: FSMContext):
     unsubscribed_channels = await get_unsubscribed_channels(user_id)
     addlists = await get_addlists_from_db()
 
-    if not unsubscribed_channels and not addlists:
+    tasks_text_list = []
+    keyboard_buttons = []
+
+    for channel in unsubscribed_channels:
+        tasks_text_list.append(f"▫️ <a href=\"https://t.me/{str(channel['id']).lstrip('@')}\">{channel['name']}</a>")
+        keyboard_buttons.append([InlineKeyboardButton(text=f"{channel['name']}", url=f"https://t.me/{str(channel['id']).lstrip('@')}")])
+
+    for addlist in addlists:
+        tasks_text_list.append(f"▫️ <a href=\"{addlist['url']}\">{addlist['name']}</a>")
+        keyboard_buttons.append([InlineKeyboardButton(text=f"{addlist['name']}", url=addlist['url'])])
+
+    if not tasks_text_list:
         vpn_config_text = random.choice(vpn_configs)['config_text']
-        text = "🎉 Siz ähli kanallara agza bolduňyz!"
+        text = "🎉 Siz ähli kanallara we klasörlere agza bolduňyz!"
         await message.answer(
             f"{text}\n\n🔑 <b>VPN Kodyňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>"
         )
     else:
         welcome_text = await get_setting_from_db('welcome_message', "👋 <b>Hoş geldiňiz!</b>")
-        
-        tasks_text_list = []
-        keyboard_buttons = []
-        
-        for channel in unsubscribed_channels:
-            tasks_text_list.append(f"▫️ <a href=\"https://t.me/{str(channel['id']).lstrip('@')}\">{channel['name']}</a>")
-            keyboard_buttons.append([InlineKeyboardButton(text=f"{channel['name']}", url=f"https://t.me/{str(channel['id']).lstrip('@')}")])
-
-        for addlist in addlists:
-            tasks_text_list.append(f"▫️ <a href=\"{addlist['url']}\">{addlist['name']}</a>")
-            keyboard_buttons.append([InlineKeyboardButton(text=f"{addlist['name']}", url=addlist['url'])])
-        
-        if tasks_text_list:
-            full_message = welcome_text + "\n\nVPN koduny almak üçin şu ýerlere agza boluň:\n\n" + "\n".join(tasks_text_list)
-            keyboard_buttons.append([InlineKeyboardButton(text="✅ Agza Boldum", callback_data="check_subscription")])
-            keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-            await message.answer(full_message, reply_markup=keyboard, disable_web_page_preview=True)
-            await state.set_state(SubscriptionStates.checking_subscription)
-        else:
-            vpn_config_text = random.choice(vpn_configs)['config_text']
-            await message.answer(f"✨ Agza bolanyňyz üçin sagboluň!\n\n🔑 <b>Siziň VPN Kodyňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>")
+        full_message = welcome_text + "\n\nVPN koduny almak üçin şu ýerlere agza boluň:\n\n" + "\n".join(tasks_text_list)
+        keyboard_buttons.append([InlineKeyboardButton(text="✅ Agza Boldum", callback_data="check_subscription")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        await message.answer(full_message, reply_markup=keyboard, disable_web_page_preview=True)
+        await state.set_state(SubscriptionStates.checking_subscription)
 
 
 # --- GÜNCELLENEN /help WE SÖHBETDEŞLIK (CHAT) ULGAMY ---
@@ -1222,7 +1218,7 @@ async def confirm_delete_admin(callback: types.CallbackQuery, state: FSMContext)
         await callback.message.edit_text("⚠️ Admin tapylmady ýa-da pozmakda ýalňyşlyk boldy.", reply_markup=back_to_admin_markup)
         await callback.answer("Admin tapylmady/ýalňyşlyk", show_alert=True)
 
-# --- SUBSCRIPTION CHECK ---
+# --- SUBSCRIPTION CHECK (DÜZELTME: Hem kanalları hem de addlist'leri kontrol eden mantık hatası düzeltildi) ---
 @router.callback_query(lambda c: c.data == "check_subscription")
 async def process_check_subscription(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -1233,10 +1229,11 @@ async def process_check_subscription(callback: types.CallbackQuery, state: FSMCo
         return await state.clear()
 
     unsubscribed_channels = await get_unsubscribed_channels(user_id)
+    addlists = await get_addlists_from_db()
     
-    if not unsubscribed_channels:
+    if not unsubscribed_channels and not addlists:
         vpn_config_text = random.choice(vpn_configs)['config_text']
-        text = "🎉 Siz ähli kanallara agza bolduňyz!"
+        text = "🎉 Siz ähli kanallara we klasörlere agza bolduňyz!"
         try:
             await callback.message.edit_text(
                 f"{text}\n\n🔑 <b>Siziň VPN koduňyz:</b>\n<pre><code>{vpn_config_text}</code></pre>",
@@ -1246,7 +1243,6 @@ async def process_check_subscription(callback: types.CallbackQuery, state: FSMCo
         await callback.answer(text="✅ Agzalyk tassyklandy!", show_alert=False)
         await state.clear()
     else:
-        addlists = await get_addlists_from_db()
         welcome_text = await get_setting_from_db('welcome_message', "👋 <b>Hoş geldiňiz!</b>")
         
         tasks_text_list = []
