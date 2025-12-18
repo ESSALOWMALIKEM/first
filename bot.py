@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 # --- CONFIGURATION ---
 API_TOKEN = '8245564742:AAFKi1RI50y9dPJDUxZwEsOPTZMNBTLaSkM'
 SUPER_ADMIN_ID = 7877979174
-DATABASE_URL = "postgresql://deezer:MPUyOunNCJVz9uOTrLYdPm1Y2LqkOnBz@dpg-d16r74fdiees73dgoukg-a/deezer_w9f6"
+DATABASE_URL = "postgresql://user:4OWUEBtffwv2lc65YQlDEg9danw4LLQi@dpg-d521qmv5r7bs73fqsq50-a/ghostdb_kt36"
 # --- END CONFIGURATION ---
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
