@@ -5,7 +5,7 @@ import os
 import time
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -41,7 +41,8 @@ user_data = load_memory()
 
 class AdminStates(StatesGroup):
     waiting_for_announcement = State()
-    waiting_for_buttons = State()
+    waiting_for_confirmation = State() # Onay veya buton ekleme beklentisi
+    waiting_for_button_input = State() # Buton linki beklentisi
 
 # --- AI FONKSİYONU ---
 async def ask_llama(user_id, message_text):
@@ -107,58 +108,94 @@ async def clear_memory(message: Message):
 @router.message(Command("admin"))
 async def admin_panel(message: Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID: return
+    # İstatistik butonu kaldırıldı, sadece Duyuru var
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Duyuru Yap", callback_data="make_announcement")],
-        [InlineKeyboardButton(text="📊 İstatistikler", callback_data="stats")]
+        [InlineKeyboardButton(text="📢 Duyuru Yap", callback_data="make_announcement")]
     ])
     await message.answer("🛠 <b>Ghost Ai Admin Paneli</b>", reply_markup=kb)
 
-# --- ADMIN İŞLEMLERİ ---
+# --- ADMIN DUYURU İŞLEMLERİ (GÜNCELLENDİ) ---
 
 @router.callback_query(F.data == "make_announcement")
 async def start_announcement(call: CallbackQuery, state: FSMContext):
-    await call.message.answer("Duyuru metnini gönderin. (Resim ekleyebilirsiniz. Kalın, İnce, Kod formatları desteklenir)")
+    await call.message.answer("Duyuru metnini (veya resmini) gönderin. (HTML formatı desteklenir)")
     await state.set_state(AdminStates.waiting_for_announcement)
+    await call.answer()
 
 @router.message(AdminStates.waiting_for_announcement)
-async def process_announcement(message: Message, state: FSMContext):
+async def process_announcement_content(message: Message, state: FSMContext):
+    # İçeriği kaydet
     content = {"text": message.html_text, "photo": message.photo[-1].file_id if message.photo else None}
     await state.update_data(announcement=content)
-    await message.answer("Buton eklemek ister misiniz?\nFormat: `Buton Yazısı - https://link.com` (Yoksa 'hayır' yazın)")
-    await state.set_state(AdminStates.waiting_for_buttons)
-
-@router.message(AdminStates.waiting_for_buttons)
-async def send_announcement(message: Message, state: FSMContext):
-    data = await state.get_data()
-    content = data['announcement']
     
-    kb = None
-    if "-" in message.text:
-        btn_text, btn_url = message.text.split("-")
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=btn_text.strip(), url=btn_url.strip())]])
+    # Seçim Butonlarını Göster
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Gönder", callback_data="send_now"),
+         InlineKeyboardButton(text="➕ Buton Ekle", callback_data="add_btn")]
+    ])
+    
+    await message.answer("✅ İçerik alındı. Ne yapmak istersiniz?", reply_markup=kb)
+    await state.set_state(AdminStates.waiting_for_confirmation)
 
+@router.callback_query(AdminStates.waiting_for_confirmation, F.data == "add_btn")
+async def ask_for_button(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_text("Butonu şu formatta gönderin:\n<code>Buton Yazısı - https://link.com</code>")
+    await state.set_state(AdminStates.waiting_for_button_input)
+
+@router.callback_query(AdminStates.waiting_for_confirmation, F.data == "send_now")
+async def send_announcement_now(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_text("🚀 Duyuru gönderiliyor...")
+    await perform_broadcast(call.message, state, None)
+
+@router.message(AdminStates.waiting_for_button_input)
+async def process_button_and_send(message: Message, state: FSMContext):
+    btn_data = None
+    if "-" in message.text:
+        txt, url = message.text.split("-", 1)
+        btn_data = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=txt.strip(), url=url.strip())]])
+    
+    await message.answer("🚀 Buton eklendi, duyuru gönderiliyor...")
+    await perform_broadcast(message, state, btn_data)
+
+async def perform_broadcast(message_obj, state, reply_markup):
+    data = await state.get_data()
+    content = data.get('announcement')
+    
     users = list(user_data.keys())
     count = 0
+    blocked_count = 0
+    
     for user_id in users:
         try:
             if content['photo']:
-                await bot.send_photo(user_id, content['photo'], caption=content['text'], reply_markup=kb)
+                await bot.send_photo(user_id, content['photo'], caption=content['text'], reply_markup=reply_markup)
             else:
-                await bot.send_message(user_id, content['text'], reply_markup=kb)
+                await bot.send_message(user_id, content['text'], reply_markup=reply_markup)
             count += 1
-        except: continue
+            await asyncio.sleep(0.05) # Flood wait önlemek için minik bekleme
+        except Exception: 
+            blocked_count += 1
+            continue
     
-    await message.answer(f"✅ Duyuru {count} kişiye başarıyla gönderildi.")
+    await message_obj.answer(f"✅ Duyuru tamamlandı.\nBaşarılı: {count}\nBaşarısız: {blocked_count}")
     await state.clear()
 
 # --- ANA MESAJ DÖNGÜSÜ ---
 
-@router.message(F.text)
+# StateFilter(None) ekledik: Eğer admin duyuru modundaysa bu handler çalışmaz.
+# Böylece duyuru metinleri Llama API'a gitmez.
+@router.message(F.text, StateFilter(None))
 async def handle_message(message: Message):
-    # Bekleme mesajı
-    wait_msg = await message.answer("👻 <i>Ghost Ai düşünüyor...</i>")
+    # Typing action gönder
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    
+    # Bekleme mesajı (opsiyonel, typing olduğu için kaldırılabilir ama kalsın istersen)
+    # wait_msg = await message.answer("👻") # İstersen bunu açabilirsin ama typing yeterli oluyor genelde.
+    
     response = await ask_llama(message.from_user.id, message.text)
-    await wait_msg.edit_text(response)
+    
+    # Cevabı gönder
+    await message.answer(response)
 
 dp.include_router(router)
 
