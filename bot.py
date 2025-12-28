@@ -96,7 +96,7 @@ async def boredom_checker():
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer("Men @musulman_vps name hyzmat ?")
+    await message.answer("Men @musulman_vpns name hyzmat ?")
 
 @dp.message(F.text)
 async def chat_handler(message: Message):
