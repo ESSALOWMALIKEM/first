@@ -1,120 +1,158 @@
 import asyncio
 import logging
-import json
-import os
-import aiohttp
-from aiogram import Bot, Dispatcher, F, Router
+import random
+import time
+from datetime import datetime, timedelta
+
+import asyncpg
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from keep_alive import keep_alive
+import os
 
 # --- AYARLAR ---
-API_TOKEN = '7822880957:AAHk1St7_PxC0zVKmaMRpaHSado_5wsO-xM' 
-LLAMA_API_KEY = 'ad33259d-2144-4a10-9dd9-4127d40ce933'
-LLAMA_API_URL = 'https://api.sambanova.ai/v1/chat/completions'
-MEMORY_FILE = 'ghost_memory.json'
+# Bu bilgileri Render Environment Variables kısmından çekmek daha güvenlidir.
+# Kodun içine de yazabilirsin ama önerilmez.
+API_TOKEN = os.getenv("API_TOKEN", "8538506186:AAGSX9ZceJ0Kh_Nzeze9v8k2VHDUlZjTTSo") 
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:4OWUEBtffwv2lc65YQlDEg9danw4LLQi@dpg-d521qmv5r7bs73fqsq50-a/ghostdb_kt36")
 
-# Loglama
+# Botun tetiklenme ihtimali (0.1 = %10 şansla cevap verir)
+REPLY_CHANCE = 0.15 
+# Botun konuşmaya başlaması için gereken minimum mesaj sayısı
+ACTIVATION_THRESHOLD = 7
+# Sıkılma süresi (saniye cinsinden, 1 saat = 3600)
+BOREDOM_TIMEOUT = 10 
+
 logging.basicConfig(level=logging.INFO)
 
-# Bot Ayarları (Markdown formatını aktif ettik)
-bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
-router = Router()
+DB_POOL = None
 
-# --- HAFIZA SİSTEMİ (Basit) ---
-def load_memory():
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
+# --- GRUP DURUM TAKİBİ (HAFIZADA) ---
+class ChatState:
+    def __init__(self):
+        self.message_count = 0
+        self.last_message_time = time.time()
+        self.active = False
+        self.bored_msg_sent = False
 
-def save_memory(data):
-    with open(MEMORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+# {chat_id: ChatState}
+chat_states = {}
 
-user_data = load_memory()
+# --- VERİTABANI İŞLEMLERİ ---
+async def init_db(pool):
+    async with pool.acquire() as connection:
+        # Mesajları saklayacağımız tablo
+        # chat_id: Mesajın hangi gruptan geldiği (Grupları karıştırmamak için)
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS group_messages (
+                id SERIAL PRIMARY KEY, 
+                chat_id BIGINT, 
+                message_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
 
-# --- YAPAY ZEKA İLETİŞİMİ ---
-async def ask_llama(user_id, message_text):
-    uid = str(user_id)
-    
-    # Kullanıcı kaydı yoksa oluştur
-    if uid not in user_data:
-        user_data[uid] = []
+async def save_message_to_db(chat_id: int, text: str):
+    """Mesajı veritabanına kaydeder."""
+    async with DB_POOL.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO group_messages (chat_id, message_text) VALUES ($1, $2)",
+            chat_id, text
+        )
 
-    # Geçmişi hazırla (Son 15 mesajı hatırla)
-    history = user_data[uid][-15:]
-    
-    # Sistem Mesajı (Botun Kimliği)
-    messages = [{
-        "role": "system", 
-        "content": "Senin adın Ghost Ai. Türkçe konuşan, yardımsever ve zeki bir asistansın. Cevaplarında önemli yerleri **kalın** yazarak vurgula."
-    }]
-    
-    messages.extend(history)
-    messages.append({"role": "user", "content": message_text})
+async def get_random_message(chat_id: int):
+    """Veritabanından o gruba ait rastgele bir mesaj çeker."""
+    async with DB_POOL.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT message_text FROM group_messages WHERE chat_id = $1 ORDER BY RANDOM() LIMIT 1",
+            chat_id
+        )
+        return row['message_text'] if row else None
 
-    payload = {
-        "model": "Meta-Llama-3.3-70B-Instruct",
-        "messages": messages,
-        "max_completion_tokens": 4096,
-        "temperature": 0.7
-    }
-    
-    headers = {"Authorization": f"Bearer {LLAMA_API_KEY}", "Content-Type": "application/json"}
+# --- ARKA PLAN GÖREVİ: SIKILMA KONTROLÜ ---
+async def boredom_checker():
+    """Her dakika grupları kontrol eder, kimse yazmadıysa isyan eder."""
+    while True:
+        await asyncio.sleep(60)  # 1 dakika bekle
+        now = time.time()
+        
+        # chat_states sözlüğünü kopyalayarak dönüyoruz ki işlem sırasında hata almayalım
+        for chat_id, state in list(chat_states.items()):
+            # Eğer son mesajdan bu yana 1 saat geçtiyse VE daha önce isyan etmediyse
+            if (now - state.last_message_time > BOREDOM_TIMEOUT) and not state.bored_msg_sent:
+                try:
+                    await bot.send_message(chat_id, "🥱 Gelin artık sıkıldım...")
+                    state.bored_msg_sent = True # Tekrar tekrar atmasın
+                    state.active = False # Modu pasife çek
+                    state.message_count = 0 # Sayacı sıfırla
+                except Exception as e:
+                    logging.error(f"Sıkılma mesajı atılamadı {chat_id}: {e}")
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(LLAMA_API_URL, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    ai_response = result['choices'][0]['message']['content']
-                    
-                    # Hafızaya kaydet
-                    user_data[uid].append({"role": "user", "content": message_text})
-                    user_data[uid].append({"role": "assistant", "content": ai_response})
-                    save_memory(user_data)
-                    
-                    return ai_response
-                else:
-                    logging.error(f"API Hatası: {resp.status}")
-                    return "⚠️ Bağlantı hatası oluştu, lütfen tekrar dene."
-    except Exception as e:
-        logging.error(f"Hata: {e}")
-        return "⚠️ Bir hata oluştu."
+# --- HANDLERLAR ---
 
-# --- HANDLERS (Komutlar ve Mesajlar) ---
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    await message.answer("Selam! Ben bu grubu izliyorum ve sizin gibi konuşmayı öğreniyorum. 😎")
 
-@router.message(Command("start"))
-async def start_command(message: Message):
-    # Hafızayı temizle ki yeni sohbete başlasın
-    uid = str(message.from_user.id)
-    user_data[uid] = []
-    save_memory(user_data)
-    await message.answer("👻 **Ghost Ai** çevrimiçi.\nSenin için ne yapabilirim?")
-
-@router.message(F.text)
+@dp.message(F.text)
 async def chat_handler(message: Message):
-    # 1. "Yazıyor..." eylemini gönder (Sürekli görünmesi için döngüye gerek yok, Telegram 5sn gösterir)
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    chat_id = message.chat.id
+    text = message.text
+
+    # 1. Mesajı veritabanına kaydet (Komut değilse ve çok kısa değilse)
+    if not text.startswith("/") and len(text) > 2:
+        await save_message_to_db(chat_id, text)
+
+    # 2. Grup Durumunu Güncelle
+    if chat_id not in chat_states:
+        chat_states[chat_id] = ChatState()
     
-    # 2. Yapay zekadan cevap al
-    response = await ask_llama(message.from_user.id, message.text)
-    
-    # 3. Cevabı gönder
-    # Markdown modunda bazı özel karakterler hata verebilir, basit try-except ile koruyalım
-    try:
-        await message.answer(response)
-    except Exception:
-        # Eğer Markdown formatı bozuk gelirse düz metin olarak gönder
-        await message.answer(response, parse_mode=None)
+    state = chat_states[chat_id]
+    state.last_message_time = time.time()
+    state.bored_msg_sent = False # Biri yazdı, sıkılma durumu iptal
+    state.message_count += 1
+
+    # 3. Aktivasyon Kontrolü (10 mesaj barajı)
+    if state.message_count >= ACTIVATION_THRESHOLD:
+        state.active = True
+
+    # 4. Botun Cevap Vermesi
+    # Eğer bot aktifse VE rastgele şans tutarsa
+    if state.active and random.random() < REPLY_CHANCE:
+        random_msg = await get_random_message(chat_id)
+        if random_msg:
+            # Gecikme efekti (İnsan gibi görünsün diye 1-3 saniye bekleme)
+            await asyncio.sleep(random.randint(1, 3))
+            # Mesaj sahibini yanıtlayarak cevap ver
+            await message.reply(random_msg)
 
 # --- BAŞLATMA ---
 async def main():
-    dp.include_router(router)
+    global DB_POOL
+    
+    # Web server'ı başlat (Render için)
+    keep_alive()
+
+    try:
+        DB_POOL = await asyncpg.create_pool(dsn=DATABASE_URL)
+        logging.info("Veritabanı bağlantısı başarılı.")
+        await init_db(DB_POOL)
+    except Exception as e:
+        logging.critical(f"Veritabanı hatası: {e}")
+        return
+
+    # Sıkılma kontrolcüsünü arka planda başlat
+    asyncio.create_task(boredom_checker())
+
+    logging.info("Bot başlatılıyor...")
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot durduruldu.")
