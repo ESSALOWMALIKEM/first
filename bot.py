@@ -23,7 +23,7 @@ REPLY_CHANCE = 0.15
 # Botun konuşmaya başlaması için gereken minimum mesaj sayısı
 ACTIVATION_THRESHOLD = 7
 # Sıkılma süresi (saniye cinsinden, 1 saat = 3600)
-BOREDOM_TIMEOUT = 10 
+BOREDOM_TIMEOUT = 3600 
 
 logging.basicConfig(level=logging.INFO)
 
@@ -85,7 +85,7 @@ async def boredom_checker():
             # Eğer son mesajdan bu yana 1 saat geçtiyse VE daha önce isyan etmediyse
             if (now - state.last_message_time > BOREDOM_TIMEOUT) and not state.bored_msg_sent:
                 try:
-                    await bot.send_message(chat_id, "🥱 Gelin artık sıkıldım...")
+                    await bot.send_message(chat_id, "🥱 içim gysýa ýazaýyň indi")
                     state.bored_msg_sent = True # Tekrar tekrar atmasın
                     state.active = False # Modu pasife çek
                     state.message_count = 0 # Sayacı sıfırla
@@ -96,7 +96,7 @@ async def boredom_checker():
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer("Selam! Ben bu grubu izliyorum ve sizin gibi konuşmayı öğreniyorum. 😎")
+    await message.answer("Men @musulman_vps name hyzmat ?")
 
 @dp.message(F.text)
 async def chat_handler(message: Message):
