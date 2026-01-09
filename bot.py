@@ -1,29 +1,37 @@
-import asyncio
 import logging
-import os
+import re
+import socket
 import base64
-from aiogram import Bot, Dispatcher, Router, F, types
-from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command
-from aiogram.types import Message
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+import requests
+import whois
+import httpx
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler
+)
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_v1_5
+from keep_alive import keep_alive
 
-# Render.com'da logları görmek için yapılandırma
-logging.basicConfig(level=logging.INFO)
+keep_alive()
 
-# --- KONFIGURASYON (Render Environment Variables) ---
-# Render panelinde 'BOT_TOKEN' adında bir Environment Variable oluşturmalısın.
-API_TOKEN = os.getenv("8292322037:AAEf6SbP0FpILYGz-Q9NqHCumXkw8qkL_nE")
+# --- YAPILANDIRMA VE TOKENLER ---
+TELEGRAM_TOKEN = "8256915637:AAHOjwML8mP9AIj-c4C87fkpwiGW7rEiOc8"
+LLAMA_API_KEY = 'ad33259d-2144-4a10-9dd9-4127d40ce933'
+LLAMA_API_URL = 'https://api.sambanova.ai/v1/chat/completions'
 
-# Eğer token yoksa hata verip durdur
-if not API_TOKEN:
-    logging.critical("HATA: BOT_TOKEN Environment Variable bulunamadı!")
-    exit(1)
-# --- KONFIGURASYON SONU ---
+# --- LOGLAMA ---
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- RSA KEYS (HTML Dosyasından Alınan Anahtarlar) ---
-KEY1 = """-----BEGIN RSA PRIVATE KEY-----
+# --- RSA ANAHTARLARI (HAPP DEKOD İÇİN) ---
+KEY_1 = """-----BEGIN RSA PRIVATE KEY-----
 MIICXwIBAAKBgQCxsS7PUq1biQlVD92rf6eXKr9oG1/SrYx3qWahZP+Jq35m4Wb/
 Z+mB6eBWrPzJ/zZpZLWLQorcvOKt+sLaCHyH1HLNkti4jlaEQX6x97XgBm8GK08+
 lLLWquFDhWRNxsrfzJyNdpVopzBRmCJKTc8ObYyPbrv9T35a8Kd5WqjnUwIDAQAB
@@ -39,7 +47,7 @@ uUILWML0uL+uAw01TeerH1aVU52T+h5z6BPdOTMNHD0arWywCzhi13i03JvaAyYw
 pcM+KDGLnbBhWrvZGy8Zg8vQwNvdvCLvylk0jVTTFqW3ibM=
 -----END RSA PRIVATE KEY-----"""
 
-KEY2 = """-----BEGIN RSA PRIVATE KEY-----
+KEY_2 = """-----BEGIN RSA PRIVATE KEY-----
 MIIJKQIBAAKCAgEA5cL2yu9dZGnNbs4jt222NugIqiuZdXKdTh4IgXZmOX0vdpW+
 rYWrPd1EObQ3Urt+YBTK5Di98EBjYCPr8tusaVRAn3Vaq41CDisEdX35u1N8jSHQ
 0zDOtPdrvJtlqShib4UI6Vybk/QSmoZVbpRb67TNsiFqBmK1kxT+mbtHkhdT2u+h
@@ -91,7 +99,7 @@ AMqvetiZ+xIsnUvDTChu7sFuL/rzndptvJ2NHHp8TbCwJAODOitU3Dd7HJfM2ERn
 mH0DZwzuaFdWnKPyJWBXddFYaNQxlfzr6IuPy6b213MHGKnFf8l2C5u32Bo+
 -----END RSA PRIVATE KEY-----"""
 
-KEY3 = """-----BEGIN RSA PRIVATE KEY-----
+KEY_3 = """-----BEGIN RSA PRIVATE KEY-----
 MIIJJwIBAAKCAgEAlBetA0wjbaj+h7oJ/d/hpNrXvAcuhOdFGEFcfCxSWyLzWk4S
 AQ05gtaEGZyetTax2uqagi9HT6lapUSUe2S8nMLJf5K+LEs9TYrhhBdx/B0BGahA
 +lPJa7nUwp7WfUmSF4hir+xka5ApHjzkAQn6cdG6FKtSPgq1rYRPd1jRf2maEHwi
@@ -143,7 +151,7 @@ R+4PaoA7jR4tsfW7z0iYqA+GUQ0zTcINJdoSTbypxkT8iVQI3VAWcKILnNcoZS4Q
 1n9PKHp8L9qHLGlIgt2jOpwKaYDChgoJI5+9WJFarSi7yX1pBXgMfD7aHA==
 -----END RSA PRIVATE KEY-----"""
 
-KEY4 = """-----BEGIN RSA PRIVATE KEY-----
+KEY_4 = """-----BEGIN RSA PRIVATE KEY-----
 MIIJKQIBAAKCAgEA3UZ0M3L4K+WjM3vkbQnzozHg/cRbEXvQ6i4A8RVN4OM3rK9k
 U01FdjyoIgywve8OEKsFnVwERZAQZ1Trv60BhmaM76QQEE+EUlIOL9EpwKWGtTL5
 lYC1sT9XJMNP3/CI0gP5wwQI88cY/xedpOEBW72EmOOShHUm/b/3m+HPmqwc4ugK
@@ -195,92 +203,246 @@ jWyMYnMwh4TbOOhjnL8iLs1D5GeSy2RV30uNR6D9XbSE/MsVqb71C2mvRhePuZRL
 k64Lx4+d28LcIk3akHMl9HeBPIvEsn94aC2K+oxaCl2Dv/tAsj62kypSh1/t
 -----END RSA PRIVATE KEY-----"""
 
-# Prefix'leri anahtarlarla eşleştir
-PREFIX_MAP = {
-    'happ://crypt/': KEY1,
-    'happ://crypt2/': KEY2,
-    'happ://crypt3/': KEY3,
-    'happ://crypt4/': KEY4
-}
+# --- CONVERSATION STATES (GHOST NAME) ---
+ILK_ISIM, IKINCI_ISIM = range(2)
 
-# --- BOT SETUP ---
-bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp = Dispatcher()
-router = Router()
-dp.include_router(router)
+# --- YARDIMCI FONKSİYONLAR ---
 
-# --- ŞİFRE ÇÖZME FONKSİYONU ---
-def decrypt_text(encrypted_url: str) -> str:
-    """
-    Web sitesindeki mantığın aynısı: Prefix'e göre anahtar seç ve çöz.
-    """
-    matched_prefix = None
-    private_key_pem = None
+def is_ip_address(text):
+    try:
+        socket.inet_aton(text)
+        return True
+    except socket.error:
+        return False
 
-    # Hangi prefix ile başlıyor?
-    for prefix, key in PREFIX_MAP.items():
-        if encrypted_url.startswith(prefix):
-            matched_prefix = prefix
-            private_key_pem = key
-            break
+def clean_data(data):
+    if isinstance(data, list):
+        return ", ".join([str(x) for x in data if x])
+    if data is None:
+        return "Bilinenok"
+    return str(data)
+
+async def chat_with_llama(user_message: str):
+    headers = {
+        "Authorization": f"Bearer {LLAMA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    request_body = {
+        "model": "Meta-Llama-3.3-70B-Instruct",
+        "messages": [
+            {"role": "system", "content": "Senin adın Ghost Ai. Yardımsever bir yapay zekasın. Yanıtlarında Markdown kullanmaya özen göster."},
+            {"role": "user", "content": user_message}
+        ],
+        "max_completion_tokens": 10000
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(LLAMA_API_URL, headers=headers, json=request_body, timeout=60.0)
+            response.raise_for_status()
+            result = response.json()
+            return result['choices'][0]['message']['content']
+        except Exception as e:
+            return f"❌ API Error: {str(e)}"
+
+# --- KOMUT HANDLERLARI ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome_text = (
+        "👋 **Salam! Men Ghost Helper Bot.**\n"
+        "Şu funksiýalary ýerine ýetirip biler:\n\n"
+        "1️⃣ **Happ Decrypt:** `happ://crypt...` ssylkalaryny awtomatiki döwmek.\n\n"
+        "2️⃣ **IP WhoIS:** Diňe IP adresini ýazsaňyz (meselem `8.8.8.8`) maglumat almak.\n\n"
+        "3️⃣ **Ters Unikode:** Adyňyzy ters ýazylan unikode etmek üçin `/ghost` komandasyny ýazyn.\n\n"
+        "4️⃣ **Domain Whois:** `/whois google.com` görnüşinde domenleri barlap bilersiňiz.\n\n"
+        "5️⃣ **AI Sorag:** Başga islendik zady ýazsaňyz, Ghost AI bilen gürleşersiňiz."
+    )
+    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
+
+# --- GHOST NAME MANIPULATION ---
+
+async def ghost_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Salam, adyňyzy ghost ýazgy line ýaly ters unikod etmek üçin ilki bilen **ýazgydan soň görünjek bölegi** ýazyň (line):", parse_mode='HTML')
+    return ILK_ISIM
+
+async def ilk_bolum_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['ilk'] = update.message.text
+    await update.message.reply_text("Indi birinji bölegi **ýazgydan öň görünjek** (ghost) bölegi ýazyň:", parse_mode='HTML')
+    return IKINCI_ISIM
+
+async def ikinci_bolum_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ikinci = update.message.text
+    ilk = context.user_data['ilk']
+    RLI = "\u2067"
+    manipule_edilmis = f"{RLI}{RLI}{RLI}{ilk}{RLI}{ikinci}"
+
+    await update.message.reply_text(f"✅ Siziň adyňyz indi {ilk} yazgy {ikinci} görnüşde bolar!")
+
+    keyboard = [[InlineKeyboardButton("📋 Şuňa bas", switch_inline_query_current_chat=manipule_edilmis)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        f"Bot username pozup taýýarlanan ady 'Hepsini seç' edip saýlap goýuň:\n\n<code>{manipule_edilmis}</code>",
+        parse_mode='HTML',
+        reply_markup=reply_markup
+    )
+    return ConversationHandler.END
+
+async def ghost_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Proses ýatyryldy.")
+    return ConversationHandler.END
+
+# --- WHOIS & IP & DECRYPT & AI (MERKEZİ MANTIK) ---
+
+async def whois_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Kullanıcı /whois google.com dediğinde çalışır
+    if not context.args:
+        await update.message.reply_text("❌ Domen ady giriziň. Örn: `/whois google.com`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    query = context.args[0]
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
-    if not matched_prefix or not private_key_pem:
-        return "⚠️ Geçersiz link formatı veya bilinmeyen prefix."
+    try:
+        w = whois.whois(query)
+        if not w.domain_name:
+             await update.message.reply_text(f"❌ **{query}** üçin maglumat çekilmedi.")
+             return
 
-    # Prefix'i çıkar, sadece şifreli veriyi al
-    encrypted_data = encrypted_url[len(matched_prefix):]
+        sonuc = (
+            f"🌐 **Domain maglumatlary**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🏷 **Domain:** `{clean_data(w.domain_name)}`\n"
+            f"🏢 **Registrar:** `{clean_data(w.registrar)}`\n"
+            f"📅 **Ýazylan senesi:** {clean_data(w.creation_date)}\n"
+            f"⌛ **Dynyş wagty:** {clean_data(w.expiration_date)}\n"
+            f"🌍 **Ýurt:** {clean_data(w.country)}\n"
+            f"⚙️ **Name Servers:**\n`{clean_data(w.name_servers)}`"
+        )
+        await update.message.reply_text(sonuc, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Hat: {str(e)}")
+
+async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Bu fonksiyon gelen mesajı analiz eder ve yönlendirir:
+    1. HAPP URL -> Decrypt
+    2. IP Adresi -> IP Lookup
+    3. Diğer -> AI Chat
+    """
+    text = update.message.text.strip()
+    
+    # 1. DURUM: HAPP DEKOD (happ://crypt...)
+    if text.startswith("happ://crypt"):
+        await handle_decryption(update, context, text)
+        return
+
+    # 2. DURUM: IP ADRESİ
+    # Eğer metin sadece bir IP adresi ise
+    if is_ip_address(text):
+        await handle_ip_lookup(update, context, text)
+        return
+
+    # 3. DURUM: AI CHAT (Varsayılan)
+    # Eğer yukarıdakiler değilse AI'ya gönder
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    ai_response = await chat_with_llama(text)
+    try:
+        await update.message.reply_text(ai_response, parse_mode=ParseMode.MARKDOWN)
+    except Exception:
+        await update.message.reply_text(ai_response) # Markdown hatası olursa düz metin
+
+async def handle_ip_lookup(update, context, ip):
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    loading_msg = await update.message.reply_text(f"🔍 `{ip}` IP barlanylýar...", parse_mode=ParseMode.MARKDOWN)
+    
+    try:
+        response = requests.get(f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,query")
+        data = response.json()
+
+        if data['status'] == 'fail':
+            await loading_msg.edit_text("❌ Ýalňys IP adresi.")
+            return
+
+        google_maps_link = f"https://www.google.com/maps/search/?api=1&query={data['lat']},{data['lon']}"
+        sonuc = (
+            f"📡 **IP barada maglumat**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🖥 **IP:** `{data['query']}`\n"
+            f"🌍 **Lokasiya:** {data['country']} ({data['countryCode']})\n"
+            f"🏙 **Şäher/ýer:** {data['regionName']} / {data['city']}\n"
+            f"📮 **Post Kod:** {data['zip']}\n"
+            f"🏢 **ISP:** {data['isp']}\n"
+            f"🏢 **Organizasya:** {data['org']}\n"
+            f"📍 [Kartadan Lokasiýany Tap]({google_maps_link})"
+        )
+        await loading_msg.edit_text(sonuc, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=False)
+    except Exception as e:
+         await loading_msg.edit_text(f"❌ Hata: {str(e)}")
+
+async def handle_decryption(update, context, encrypted_text):
+    key_pem = None
+    prefix_length = 0
+
+    if encrypted_text.startswith("happ://crypt4/"):
+        key_pem = KEY_4
+        prefix_length = len("happ://crypt4/")
+    elif encrypted_text.startswith("happ://crypt3/"):
+        key_pem = KEY_3
+        prefix_length = len("happ://crypt3/")
+    elif encrypted_text.startswith("happ://crypt2/"):
+        key_pem = KEY_2
+        prefix_length = len("happ://crypt2/")
+    elif encrypted_text.startswith("happ://crypt/"):
+        key_pem = KEY_1
+        prefix_length = len("happ://crypt/")
+    else:
+        await update.message.reply_text("❌ Tanımsız happ formatı.")
+        return
+
+    data_to_decrypt = encrypted_text[prefix_length:]
 
     try:
-        # 1. Private Key'i yükle
-        private_key = serialization.load_pem_private_key(
-            private_key_pem.encode(),
-            password=None
-        )
+        encrypted_bytes = base64.b64decode(data_to_decrypt)
+        rsa_key = RSA.import_key(key_pem)
+        cipher = PKCS1_v1_5.new(rsa_key)
+        sentinel = b"DECRYPTION_FAILED"
+        decrypted_bytes = cipher.decrypt(encrypted_bytes, sentinel)
 
-        # 2. Base64 decode (URL'den gelen veri base64 formatındadır)
-        ciphertext = base64.b64decode(encrypted_data)
+        if decrypted_bytes == sentinel:
+            await update.message.reply_text("❌ Döwip bolmady @ghost_fsociety yüz tutuň.")
+            return
 
-        # 3. Şifreyi çöz (JSEncrypt varsayılan olarak PKCS1v1.5 padding kullanır)
-        plaintext = private_key.decrypt(
-            ciphertext,
-            padding.PKCS1v15()
-        )
-        
-        return plaintext.decode('utf-8')
-
+        result = decrypted_bytes.decode('utf-8')
+        await update.message.reply_text(f"✅ Döwülen ssylka:\n\n`{result}`", parse_mode='Markdown')
     except Exception as e:
-        return f"⚠️ Şifre çözme hatası: {str(e)}"
-
-# --- HANDLERS ---
-
-@router.message(Command("start"))
-async def start_handler(message: Message):
-    await message.answer(
-        "👋 <b>Happ Decryptor Bot'a Hoş Geldiniz!</b>\n\n"
-        "Bana <code>happ://crypt...</code> ile başlayan bir link gönderin, "
-        "ben de şifresini çözüp size asıl içeriği vereyim.\n\n"
-        "<i>Web sitesindeki mantığın aynısıdır.</i>"
-    )
-
-@router.message(F.text)
-async def handle_message(message: Message):
-    text = message.text.strip()
-    
-    # Basit bir kontrol: Link happ:// ile mi başlıyor?
-    if text.startswith("happ://crypt"):
-        decrypted_result = decrypt_text(text)
-        
-        if decrypted_result.startswith("⚠️"):
-            await message.reply(decrypted_result)
-        else:
-            # Sonucu code bloğu içinde gönder ki kopyalaması kolay olsun
-            await message.reply(f"🔓 <b>Çözülen Veri:</b>\n\n<pre>{decrypted_result}</pre>")
-    else:
-        await message.answer("Lütfen geçerli bir <code>happ://crypt...</code> linki gönderin.")
+        await update.message.reply_text(f"❌ Ýalňyşlyk:\n{str(e)}")
 
 # --- MAIN ---
-async def main():
-    await dp.start_polling(bot)
+
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Conversation Handler (Ghost Name - En yüksek öncelik)
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('ghost', ghost_start)],
+        states={
+            ILK_ISIM: [MessageHandler(filters.TEXT & ~filters.COMMAND, ilk_bolum_al)],
+            IKINCI_ISIM: [MessageHandler(filters.TEXT & ~filters.COMMAND, ikinci_bolum_al)],
+        },
+        fallbacks=[CommandHandler('cancel', ghost_cancel)],
+    )
+    app.add_handler(conv_handler)
+
+    # Standart Komutlar
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("whois", whois_command))
+
+    # Genel Mesaj Handler (IP, Happ ve AI Router)
+    # filters.TEXT & ~filters.COMMAND -> Komut olmayan tüm metinleri yakalar
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages))
+
+    print("Ghost Unified Bot Aktif...")
+    app.run_polling()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
