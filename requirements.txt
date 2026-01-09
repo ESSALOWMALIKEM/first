@@ -3,3 +3,4 @@ requests
 python-whois
 httpx
 pycryptodome
+flask
