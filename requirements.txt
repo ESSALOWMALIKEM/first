@@ -1,5 +1,5 @@
-aiogram>=3.0.0
-asyncpg
-Flask
-gunicorn
-python-dotenv
+python-telegram-bot
+requests
+python-whois
+httpx
+pycryptodome
