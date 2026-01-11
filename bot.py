@@ -28,7 +28,6 @@ from keep_alive import keep_alive
 keep_alive()
 
 # --- KONFIGURASIÝA ---
-# Tokenleriňizi goragly saklaň.
 TELEGRAM_TOKEN = "8256915637:AAHOjwML8mP9AIj-c4C87fkpwiGW7rEiOc8"
 LLAMA_API_KEY = 'ad33259d-2144-4a10-9dd9-4127d40ce933'
 LLAMA_API_URL = 'https://api.sambanova.ai/v1/chat/completions'
@@ -38,9 +37,8 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- YADYDA SAKLAMAK (AI MEMORY) ---
-# Ulanyjy ID -> { 'history': [], 'last_time': timestamp }
 user_memory = {}
-MEMORY_TIMEOUT = 60  # 20 sekunt wagtdan soň ýatdan çykarýar
+MEMORY_TIMEOUT = 60
 
 # --- RSA AÇARLARY (HAPP DEKOD ÜÇIN) ---
 KEY_1 = """-----BEGIN RSA PRIVATE KEY-----
@@ -219,7 +217,6 @@ k64Lx4+d28LcIk3akHMl9HeBPIvEsn94aC2K+oxaCl2Dv/tAsj62kypSh1/t
 ILK_ISIM, IKINCI_ISIM = range(2)
 
 # --- KÖMEKÇI FUNKSIÝALAR ---
-
 def is_ip_address(text):
     try:
         socket.inet_aton(text)
@@ -240,7 +237,6 @@ async def chat_with_llama(user_id: int, user_message: str):
         "Content-Type": "application/json"
     }
 
-    # 1. Ýady barlamak (20 sekunt dolan bolsa pozmak)
     current_time = time.time()
     
     if user_id not in user_memory:
@@ -248,19 +244,16 @@ async def chat_with_llama(user_id: int, user_message: str):
     
     last_interaction = user_memory[user_id]['last_time']
     if current_time - last_interaction > MEMORY_TIMEOUT:
-        user_memory[user_id]['history'] = []  # Ýady poz
+        user_memory[user_id]['history'] = []
     
-    # Wagty täzelemek
     user_memory[user_id]['last_time'] = current_time
 
-    # 2. Sistemanyň prompdy
     system_prompt = (
         "Seniň adyň Ghost Unified. Kiber howpsuzlyk, kodlamak we tor (network) meselelerinde ökde, "
         "gizlin we peýdaly bir emeli aň (AI). Jogaplaryň gysga, tehniki we düşnükli bolsun. "
-        "Markdown ulanyp jogap ber. Türkmen dilinde gürle."
+        "Markdown ulanyp jogap ber."
     )
 
-    # 3. Taryhy gurmak
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(user_memory[user_id]['history'])
     messages.append({"role": "user", "content": user_message})
@@ -279,7 +272,6 @@ async def chat_with_llama(user_id: int, user_message: str):
             
             ai_content = result['choices'][0]['message']['content']
             
-            # AI jogabyny we ulanyjy soragyny taryha goşmak
             user_memory[user_id]['history'].append({"role": "user", "content": user_message})
             user_memory[user_id]['history'].append({"role": "assistant", "content": ai_content})
             
@@ -314,7 +306,7 @@ async def generate_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     password = "".join(random.choice(chars) for _ in range(length))
     
     msg = (
-        "🔐 **Ghost Howpsuz Açar Sözi**\n"
+        "🔐 **Your Security Password**\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"`{password}`\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -329,19 +321,39 @@ async def crypto_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     try:
-        r = requests.get(url, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json'
+        }
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
         data = r.json()
         
+        if not data:
+            await update.message.reply_text("❌ Kripto maglumaty alynmady. Biraz soňra synanyşyň.")
+            return
+            
         text = "📊 **Kripto Bazary (Top 15)**\n━━━━━━━━━━━━━━━━━━\n"
         for coin in data:
             symbol = coin['symbol'].upper()
             price = coin['current_price']
             name = coin['id']
-            text += f"• `{symbol}`: ${price} (`/coin {name}`)\n"
+            change = coin['price_change_percentage_24h']
             
+            # Değişim yüzdesine göre emoji
+            change_emoji = "📈" if change >= 0 else "📉"
+            
+            text += f"• `{symbol}`: ${price:,.2f} {change_emoji} {change:+.2f}%\n"
+        
+        text += f"\n🔎 Bahasyny görmek üçin: `/coin <ady>`\nMysal: `/coin bitcoin`"
+        
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    except requests.exceptions.Timeout:
+        await update.message.reply_text("❌ Sorag wagty doldu. Täzeden synanyşyň.")
+    except requests.exceptions.RequestException as e:
+        await update.message.reply_text(f"❌ Ýalňyşlyk: {str(e)}")
     except Exception as e:
-        await update.message.reply_text("❌ Maglumat alyp bolmady. Biraz soňra synanyşyň.")
+        await update.message.reply_text(f"❌ Näbelli ýalňyşlyk: {str(e)}")
 
 async def crypto_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -354,69 +366,150 @@ async def crypto_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     coin_id = context.args[0].lower()
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd,try,rub"
+    
+    # Kullanıcı dostu coin adları için mapping
+    coin_mapping = {
+        'btc': 'bitcoin',
+        'eth': 'ethereum',
+        'usdt': 'tether',
+        'bnb': 'binancecoin',
+        'sol': 'solana',
+        'xrp': 'ripple',
+        'ada': 'cardano',
+        'doge': 'dogecoin',
+        'dot': 'polkadot',
+        'matic': 'matic-network',
+        'shib': 'shiba-inu',
+        'trx': 'tron',
+        'avax': 'avalanche-2',
+        'ltc': 'litecoin',
+        'link': 'chainlink'
+    }
+    
+    # Kısaltma kullanıldıysa tam adına çevir
+    if coin_id in coin_mapping:
+        coin_id = coin_mapping[coin_id]
+    
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd,try,rub&include_market_cap=true&include_24hr_vol=true&include_24hr_change=true"
+    
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     try:
-        r = requests.get(url, timeout=10).json()
-        if coin_id in r:
-            usd = r[coin_id]['usd']
-            try_price = r[coin_id]['try']
-            rub_price = r[coin_id]['rub']
-            text = (
-                f"💰 **{coin_id.upper()} Bahasy**\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"🇺🇸 USD: `${usd}`\n"
-                f"🇹🇷 TRY: `₺{try_price}`\n"
-                f"🇷🇺 RUB: `₽{rub_price}`"
-            )
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        else:
-            await update.message.reply_text(
-                f"❌ '{coin_id}' tapylmady.\n"
-                "⚠️ Haýyş, doly adyny ýazyň (meselem: 'btc' däl, 'bitcoin').\n"
-                "Kripto atlaryny görmek üçin: `/list`"
-            )
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json'
+        }
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        
+        if coin_id not in data:
+            # Coin bulunamadı, alternatif arama yap
+            search_url = f"https://api.coingecko.com/api/v3/search?query={coin_id}"
+            search_r = requests.get(search_url, headers=headers, timeout=10)
+            search_data = search_r.json()
+            
+            if search_data['coins']:
+                suggestions = []
+                for coin in search_data['coins'][:5]:
+                    suggestions.append(f"• `{coin['id']}` ({coin['symbol'].upper()})")
+                
+                await update.message.reply_text(
+                    f"❌ '{coin_id}' tapylmady.\n\n"
+                    f"📝 Belki şulary gözläýärsiňiz:\n" + "\n".join(suggestions) +
+                    f"\n\nℹ️ Haýyş, doly ady ulan (mysal: 'btc' däl, 'bitcoin')."
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ '{coin_id}' tapylmady.\n"
+                    f"ℹ️ Kripto atlaryny görmek üçin: `/list`"
+                )
+            return
+            
+        coin_data = data[coin_id]
+        usd = coin_data['usd']
+        try_price = coin_data.get('try', 'N/A')
+        rub_price = coin_data.get('rub', 'N/A')
+        change_24h = coin_data.get('usd_24h_change', 0)
+        
+        # Piyasa hacmi ve değeri için ayrı bir API çağrısı
+        detail_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false"
+        detail_r = requests.get(detail_url, headers=headers, timeout=15)
+        detail_data = detail_r.json()
+        
+        market_cap = detail_data['market_data']['market_cap']['usd']
+        volume = detail_data['market_data']['total_volume']['usd']
+        high_24h = detail_data['market_data']['high_24h']['usd']
+        low_24h = detail_data['market_data']['low_24h']['usd']
+        
+        change_emoji = "📈" if change_24h >= 0 else "📉"
+        
+        text = (
+            f"💰 **{coin_id.upper()} Bahasy**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🇺🇸 USD: `${usd:,.2f}`\n"
+            f"🇹🇷 TRY: `₺{try_price:,.2f}`\n"
+            f"🇷🇺 RUB: `₽{rub_price:,.2f}`\n\n"
+            f"📊 **24 Saat:**\n"
+            f"• Değişim: {change_emoji} `{change_24h:+.2f}%`\n"
+            f"• Ýokary: `${high_24h:,.2f}`\n"
+            f"• Aşak: `${low_24h:,.2f}`\n"
+            f"• Hacim: `${volume:,.0f}`\n"
+            f"• Pazar Gap: `${market_cap:,.0f}`\n\n"
+            f"🔄 Son wagt: {time.strftime('%H:%M:%S')}"
+        )
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        
+    except requests.exceptions.Timeout:
+        await update.message.reply_text("❌ Sorag wagty doldu. Täzeden synanyşyň.")
+    except requests.exceptions.RequestException as e:
+        await update.message.reply_text(f"❌ Ýalňyşlyk: {str(e)}")
     except Exception as e:
-        await update.message.reply_text("❌ Baha maglumaty alynmady.")
+        await update.message.reply_text(f"❌ Näbelli ýalňyşlyk: {str(e)}")
 
 # --- START VE MENU ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    gif_url = "https://media.giphy.com/media/YQitE4YNQNahy/giphy.gif"
     
     welcome_text = (
-        f"🕵️‍♂️ **Sisteme Giriş Tassyklandy, {user.first_name}.**\n\n"
-        "Men **Ghost Unified Bot**. Seniň sanly kömekçiň.\n"
+        f"👋 Salam {user.first_name}!\n"
+        f"Men **Ghost Unified Bot**..\n"
         "Komandalary saýla ýa-da ýaz:\n\n"
         "• `/qr <tekst>` - QR Kod Ýasa\n"
         "• `/pass` - Açar Sözi Döret\n"
         "• `/list` - Kripto Bazary\n"
         "• `/coin <at>` - Kripto Bahasy\n"
-        "• `happ://crypt...` - Link Çözüji\n"
-        "• `8.8.8.8` - IP Maglumat"
+        "• `happ://crypt...` - Happ Decryptor\n"
+        "• `8.8.8.8` - IP Maglumat\n"
+        "• `/ghost` - Ters Unicode Ad\n"
+        "• `/whois <domen>` - Domen Maglumat"
     )
 
     keyboard = [
         [
-            InlineKeyboardButton("🔐 Decrypt Info", callback_data='help_decrypt'),
-            InlineKeyboardButton("👻 Ghost Ady", callback_data='help_ghost')
+            InlineKeyboardButton("🔐 Happ Decrypt", callback_data='help_decrypt'),
+            InlineKeyboardButton("👻 Ters Unicode", callback_data='help_ghost')
         ],
         [
             InlineKeyboardButton("🌐 IP & Whois", callback_data='help_ip'),
-            InlineKeyboardButton("🤖 AI Chat", callback_data='help_ai')
+            InlineKeyboardButton("🤖 AI", callback_data='help_ai')
+        ],
+        [
+            InlineKeyboardButton("💰 Kripto", callback_data='help_crypto'),
+            InlineKeyboardButton("🔐 Password", callback_data='help_pass')
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        await update.message.reply_animation(
-            animation=gif_url,
-            caption=welcome_text,
+        await update.message.reply_text(
+            welcome_text,
             reply_markup=reply_markup,
             parse_mode=ParseMode.MARKDOWN
         )
-    except Exception:
+    except Exception as e:
         await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -425,25 +518,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     msg = ""
     if query.data == 'help_decrypt':
-        msg = "🔐 **Decrypt Modu**\n`happ://crypt` bilen başlaýan şifreli linkleri iberiň, men oları çözüp bereýin."
+        msg = "🔐 **Decrypt Mode**\n`happ://crypt` bilen başlaýan şifreli linkleri iberiň, men olary çözüp bereýin."
     elif query.data == 'help_ghost':
-        msg = "👻 **Ghost Ady**\nAdyňy ters ýazylan Unicode harplaryna öwürmek üçin `/ghost` komandasyny ulan."
+        msg = "👻 **Ters Unicode**\nAdyňy ters ýazylan Unicode harplaryna öwürmek üçin `/ghost` komandasyny ulan."
     elif query.data == 'help_ip':
         msg = "🌐 **Tor Gurallary**\n• IP salgysyny ýazsaň (mysal: `1.1.1.1`) ýerleşýän ýerini taparyn.\n• `/whois google.com` domen maglumatlaryny berer."
     elif query.data == 'help_ai':
-        msg = "🤖 **Ghost AI**\nMaňa islendik sorag berip bilersiňiz. Eger 20 sekunt gürleşmesek, men öňki gürrüňleri unudýaryn (hafıza arassalanýar)."
-
+        msg = "🤖 **Ghost AI**\nMaňa islendik sorag berip bilersiňiz."
+    elif query.data == 'help_crypto':
+        msg = "💰 **Kripto Komandalary**\n• `/list` - Kripto bazaryny göster\n• `/coin <ady>` - Kripto bahasyny göster\nMysal: `/coin bitcoin`"
+    elif query.data == 'help_pass':
+        msg = "🔐 **Password Generator**\nGüýçli açar söz döretmek üçin `/pass` komandasyny ulan."
+    
     await query.edit_message_caption(caption=msg, parse_mode=ParseMode.MARKDOWN)
 
 # --- GHOST NAME MANIPULATION ---
 
 async def ghost_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👻 **Ghost Mode:**\nIlki bilen **ýazgynyň SOŇUNDA** görünjek bölegi ýazyň (Line):", parse_mode='Markdown')
+    await update.message.reply_text("👻 **Unicode Mode:**\nIlki bilen yazgynyň SOŇUNDA görünjek bölegi ýazyň (line):", parse_mode='Markdown')
     return ILK_ISIM
 
 async def ilk_bolum_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['ilk'] = update.message.text
-    await update.message.reply_text("Indi **ýazgynyň BAŞYNDA** görünjek bölegi ýazyň (Ghost):")
+    await update.message.reply_text("Indi yazgynyň BAŞYNDA görünjek bölegi ýazyň (ghost):")
     return IKINCI_ISIM
 
 async def ikinci_bolum_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -580,7 +677,7 @@ async def handle_decryption(update, context, encrypted_text):
             return
 
         result = decrypted_bytes.decode('utf-8')
-        await update.message.reply_text(f"🔓 **Deşifre Edildi:**\n\n`{result}`", parse_mode='Markdown')
+        await update.message.reply_text(f"🔓 **Decrypt Edildi:**\n\n`{result}`", parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(f"❌ Kriptografi Ýalňyşlygy:\n{str(e)}")
 
@@ -616,7 +713,8 @@ def main():
     # Ähli Mesajlary Gözegçilik (Iň soňunda bolmaly)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages))
 
-    print("Ghost Unified Bot (v3.0) Işjeň - Türkmençe...")
+    print("Ghost Unified Bot (v3.1) Işjeň - Türkmençe...")
+    print("✅ Kripto özellikleri düzeltildi!")
     app.run_polling()
 
 if __name__ == '__main__':
