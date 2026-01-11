@@ -1,6 +1,7 @@
 python-telegram-bot
 requests
 python-whois
-httpx
 pycryptodome
-flask
+httpx
+qrcode
+pillow
