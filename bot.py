@@ -9,6 +9,7 @@ import qrcode
 import random
 import string
 import time
+import json
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -315,158 +316,169 @@ async def generate_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 async def crypto_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Piyasa değeri en yüksek coinleri listeler."""
-    url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=15&page=1&sparkline=false"
-    
+    """Binance API kullanarak kripto listesi göster"""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     try:
+        # Binance API'den veri çek
+        url = "https://api.binance.com/api/v3/ticker/24hr"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        r = requests.get(url, headers=headers, timeout=15)
-        r.raise_for_status()
-        data = r.json()
         
-        if not data:
-            await update.message.reply_text("❌ Kripto maglumaty alynmady. Biraz soňra synanyşyň.")
-            return
-            
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        
+        # USDT ile biten kriptoları filtrele
+        usdt_pairs = [item for item in data if item['symbol'].endswith('USDT')]
+        
+        # Volume'e göre sırala ve ilk 15'i al
+        top_coins = sorted(usdt_pairs, key=lambda x: float(x['quoteVolume']), reverse=True)[:15]
+        
         text = "📊 **Kripto Bazary (Top 15)**\n━━━━━━━━━━━━━━━━━━\n"
-        for coin in data:
-            symbol = coin['symbol'].upper()
-            price = coin['current_price']
-            name = coin['id']
-            change = coin['price_change_percentage_24h']
+        
+        for coin in top_coins:
+            symbol = coin['symbol'].replace('USDT', '')
+            price = float(coin['lastPrice'])
+            change = float(coin['priceChangePercent'])
+            
+            # Fiyat formatı
+            if price >= 1:
+                price_str = f"${price:,.2f}"
+            else:
+                price_str = f"${price:.6f}".rstrip('0').rstrip('.')
             
             # Değişim yüzdesine göre emoji
             change_emoji = "📈" if change >= 0 else "📉"
             
-            text += f"• `{symbol}`: ${price:,.2f} {change_emoji} {change:+.2f}%\n"
+            text += f"• `{symbol}`: {price_str} {change_emoji} {change:+.2f}%\n"
         
-        text += f"\n🔎 Bahasyny görmek üçin: `/coin <ady>`\nMysal: `/coin bitcoin`"
+        text += f"\n🔎 Bahasyny görmek üçin: `/coin <ady>`\nMysal: `/coin BTC`"
         
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-    except requests.exceptions.Timeout:
-        await update.message.reply_text("❌ Sorag wagty doldu. Täzeden synanyşyň.")
-    except requests.exceptions.RequestException as e:
-        await update.message.reply_text(f"❌ Ýalňyşlyk: {str(e)}")
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Näbelli ýalňyşlyk: {str(e)}")
+        logger.error(f"Crypto list error: {e}")
+        await update.message.reply_text(
+            "❌ Kripto maglumaty alynmady.\n\n"
+            "⚠️ Alternativ: CoinMarketCap API ulanmak üçin:\n"
+            "1. https://coinmarketcap.com/api/ sahypasyndan API açary alyň\n"
+            "2. Koda API açaryňyzy goşuň"
+        )
 
 async def crypto_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
             "❌ Ulanylyşy: `/coin <coin_ady>`\n"
-            "Mysal: `/coin bitcoin`, `/coin ethereum`, `/coin solana`\n"
+            "Mysal: `/coin BTC`, `/coin ETH`, `/coin SOL`\n"
             "Doly sanaw üçin: `/list`", 
             parse_mode=ParseMode.MARKDOWN
         )
         return
         
-    coin_id = context.args[0].lower()
+    coin_symbol = context.args[0].upper()
     
-    # Kullanıcı dostu coin adları için mapping
-    coin_mapping = {
-        'btc': 'bitcoin',
-        'eth': 'ethereum',
-        'usdt': 'tether',
-        'bnb': 'binancecoin',
-        'sol': 'solana',
-        'xrp': 'ripple',
-        'ada': 'cardano',
-        'doge': 'dogecoin',
-        'dot': 'polkadot',
-        'matic': 'matic-network',
-        'shib': 'shiba-inu',
-        'trx': 'tron',
-        'avax': 'avalanche-2',
-        'ltc': 'litecoin',
-        'link': 'chainlink'
+    # Binance API için sembol mapping
+    symbol_mapping = {
+        'BTC': 'BTCUSDT',
+        'ETH': 'ETHUSDT',
+        'BNB': 'BNBUSDT',
+        'SOL': 'SOLUSDT',
+        'XRP': 'XRPUSDT',
+        'ADA': 'ADAUSDT',
+        'DOGE': 'DOGEUSDT',
+        'DOT': 'DOTUSDT',
+        'MATIC': 'MATICUSDT',
+        'SHIB': 'SHIBUSDT',
+        'TRX': 'TRXUSDT',
+        'AVAX': 'AVAXUSDT',
+        'LTC': 'LTCUSDT',
+        'LINK': 'LINKUSDT',
+        'ATOM': 'ATOMUSDT',
+        'UNI': 'UNIUSDT',
+        'XLM': 'XLMUSDT',
+        'ALGO': 'ALGOUSDT',
+        'VET': 'VETUSDT',
+        'AXS': 'AXSUSDT'
     }
     
-    # Kısaltma kullanıldıysa tam adına çevir
-    if coin_id in coin_mapping:
-        coin_id = coin_mapping[coin_id]
+    if coin_symbol not in symbol_mapping:
+        await update.message.reply_text(
+            f"❌ '{coin_symbol}' tapylmady.\n\n"
+            f"📝 Desteklenen kriptolar:\n"
+            f"BTC, ETH, BNB, SOL, XRP, ADA, DOGE, DOT, MATIC, SHIB, TRX, AVAX, LTC, LINK, ATOM, UNI, XLM, ALGO, VET, AXS\n\n"
+            f"ℹ️ Mysal: `/coin BTC`"
+        )
+        return
     
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd,try,rub&include_market_cap=true&include_24hr_vol=true&include_24hr_change=true"
+    symbol = symbol_mapping[coin_symbol]
     
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     try:
+        # Binance API'den fiyat bilgisi
+        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        r = requests.get(url, headers=headers, timeout=15)
-        r.raise_for_status()
-        data = r.json()
         
-        if coin_id not in data:
-            # Coin bulunamadı, alternatif arama yap
-            search_url = f"https://api.coingecko.com/api/v3/search?query={coin_id}"
-            search_r = requests.get(search_url, headers=headers, timeout=10)
-            search_data = search_r.json()
-            
-            if search_data['coins']:
-                suggestions = []
-                for coin in search_data['coins'][:5]:
-                    suggestions.append(f"• `{coin['id']}` ({coin['symbol'].upper()})")
-                
-                await update.message.reply_text(
-                    f"❌ '{coin_id}' tapylmady.\n\n"
-                    f"📝 Belki şulary gözläýärsiňiz:\n" + "\n".join(suggestions) +
-                    f"\n\nℹ️ Haýyş, doly ady ulan (mysal: 'btc' däl, 'bitcoin')."
-                )
-            else:
-                await update.message.reply_text(
-                    f"❌ '{coin_id}' tapylmady.\n"
-                    f"ℹ️ Kripto atlaryny görmek üçin: `/list`"
-                )
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        
+        if 'code' in data:
+            await update.message.reply_text(f"❌ {coin_symbol} tapylmady.")
             return
-            
-        coin_data = data[coin_id]
-        usd = coin_data['usd']
-        try_price = coin_data.get('try', 'N/A')
-        rub_price = coin_data.get('rub', 'N/A')
-        change_24h = coin_data.get('usd_24h_change', 0)
         
-        # Piyasa hacmi ve değeri için ayrı bir API çağrısı
-        detail_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false"
-        detail_r = requests.get(detail_url, headers=headers, timeout=15)
-        detail_data = detail_r.json()
+        price = float(data['lastPrice'])
+        high = float(data['highPrice'])
+        low = float(data['lowPrice'])
+        change = float(data['priceChangePercent'])
+        volume = float(data['volume'])
+        quote_volume = float(data['quoteVolume'])
         
-        market_cap = detail_data['market_data']['market_cap']['usd']
-        volume = detail_data['market_data']['total_volume']['usd']
-        high_24h = detail_data['market_data']['high_24h']['usd']
-        low_24h = detail_data['market_data']['low_24h']['usd']
+        # Fiyat formatı
+        if price >= 1:
+            price_str = f"${price:,.2f}"
+            high_str = f"${high:,.2f}"
+            low_str = f"${low:,.2f}"
+        else:
+            price_str = f"${price:.6f}".rstrip('0').rstrip('.')
+            high_str = f"${high:.6f}".rstrip('0').rstrip('.')
+            low_str = f"${low:.6f}".rstrip('0').rstrip('.')
         
-        change_emoji = "📈" if change_24h >= 0 else "📉"
+        change_emoji = "📈" if change >= 0 else "📉"
+        
+        # TRY ve RUB için yaklaşık dönüşüm (API'den alınan veri yoksa)
+        try_rate = 32.5  # Yaklaşık USD/TRY oranı
+        rub_rate = 92.0  # Yaklaşık USD/RUB oranı
+        
+        try_price = price * try_rate
+        rub_price = price * rub_rate
         
         text = (
-            f"💰 **{coin_id.upper()} Bahasy**\n"
+            f"💰 **{coin_symbol} Bahasy**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"🇺🇸 USD: `${usd:,.2f}`\n"
-            f"🇹🇷 TRY: `₺{try_price:,.2f}`\n"
-            f"🇷🇺 RUB: `₽{rub_price:,.2f}`\n\n"
-            f"📊 **24 Saat:**\n"
-            f"• Değişim: {change_emoji} `{change_24h:+.2f}%`\n"
-            f"• Ýokary: `${high_24h:,.2f}`\n"
-            f"• Aşak: `${low_24h:,.2f}`\n"
-            f"• Hacim: `${volume:,.0f}`\n"
-            f"• Pazar Gap: `${market_cap:,.0f}`\n\n"
-            f"🔄 Son wagt: {time.strftime('%H:%M:%S')}"
+            f"🇺🇸 USD: {price_str}\n"
+            f"🇹🇷 TRY: ₺{try_price:,.2f}\n"
+            f"🇷🇺 RUB: ₽{rub_price:,.2f}\n\n"
+            f"📊 **24 Saatlik:**\n"
+            f"• Değişim: {change_emoji} `{change:+.2f}%`\n"
+            f"• Ýokary: {high_str}\n"
+            f"• Aşak: {low_str}\n"
+            f"• Hacim: `{volume:,.0f} {coin_symbol}`\n"
+            f"• Değer: `${quote_volume:,.0f}`\n\n"
+            f"🔄 Son wagt: {time.strftime('%H:%M:%S')}\n"
+            f"🔗 Kaynak: Binance API"
         )
         
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         
-    except requests.exceptions.Timeout:
-        await update.message.reply_text("❌ Sorag wagty doldu. Täzeden synanyşyň.")
-    except requests.exceptions.RequestException as e:
-        await update.message.reply_text(f"❌ Ýalňyşlyk: {str(e)}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Näbelli ýalňyşlyk: {str(e)}")
+        logger.error(f"Crypto price error: {e}")
+        await update.message.reply_text(
+            f"❌ {coin_symbol} bahasy alynmady.\n"
+            f"⚠️ Biraz soňra synanyşyň ýa-da başga bir kripto saýlaň."
+        )
 
 # --- START VE MENU ---
 
@@ -526,11 +538,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'help_ai':
         msg = "🤖 **Ghost AI**\nMaňa islendik sorag berip bilersiňiz."
     elif query.data == 'help_crypto':
-        msg = "💰 **Kripto Komandalary**\n• `/list` - Kripto bazaryny göster\n• `/coin <ady>` - Kripto bahasyny göster\nMysal: `/coin bitcoin`"
+        msg = "💰 **Kripto Komandalary**\n• `/list` - Kripto bazaryny göster\n• `/coin <ady>` - Kripto bahasyny göster\nMysal: `/coin BTC`"
     elif query.data == 'help_pass':
         msg = "🔐 **Password Generator**\nGüýçli açar söz döretmek üçin `/pass` komandasyny ulan."
     
-    await query.edit_message_caption(caption=msg, parse_mode=ParseMode.MARKDOWN)
+    await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 # --- GHOST NAME MANIPULATION ---
 
@@ -713,8 +725,10 @@ def main():
     # Ähli Mesajlary Gözegçilik (Iň soňunda bolmaly)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages))
 
-    print("Ghost Unified Bot (v3.1) Işjeň - Türkmençe...")
-    print("✅ Kripto özellikleri düzeltildi!")
+    print("Ghost Unified Bot (v3.2) Işjeň - Türkmençe...")
+    print("✅ Kripto özellikleri düzeltildi! (Binance API kullanılıyor)")
+    print("📊 /list - Kripto listesi")
+    print("💰 /coin <BTC> - Kripto fiyatı")
     app.run_polling()
 
 if __name__ == '__main__':
