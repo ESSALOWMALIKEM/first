@@ -8,6 +8,7 @@ import httpx
 import qrcode
 import random
 import string
+import time
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -26,8 +27,8 @@ from keep_alive import keep_alive
 
 keep_alive()
 
-# --- YAPILANDIRMA VE TOKENLER ---
-# NOT: Tokenlerinizi güvende tutun.
+# --- KONFIGURASIÝA ---
+# Tokenleriňizi goragly saklaň.
 TELEGRAM_TOKEN = "8256915637:AAHOjwML8mP9AIj-c4C87fkpwiGW7rEiOc8"
 LLAMA_API_KEY = 'ad33259d-2144-4a10-9dd9-4127d40ce933'
 LLAMA_API_URL = 'https://api.sambanova.ai/v1/chat/completions'
@@ -36,8 +37,12 @@ LLAMA_API_URL = 'https://api.sambanova.ai/v1/chat/completions'
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- RSA ANAHTARLARI (HAPP DEKOD İÇİN) ---
-# (Mevcut anahtarlar korundu, yer kaplamaması için kısaltılmadı)
+# --- YADYDA SAKLAMAK (AI MEMORY) ---
+# Ulanyjy ID -> { 'history': [], 'last_time': timestamp }
+user_memory = {}
+MEMORY_TIMEOUT = 60  # 20 sekunt wagtdan soň ýatdan çykarýar
+
+# --- RSA AÇARLARY (HAPP DEKOD ÜÇIN) ---
 KEY_1 = """-----BEGIN RSA PRIVATE KEY-----
 MIICXwIBAAKBgQCxsS7PUq1biQlVD92rf6eXKr9oG1/SrYx3qWahZP+Jq35m4Wb/
 Z+mB6eBWrPzJ/zZpZLWLQorcvOKt+sLaCHyH1HLNkti4jlaEQX6x97XgBm8GK08+
@@ -210,10 +215,10 @@ jWyMYnMwh4TbOOhjnL8iLs1D5GeSy2RV30uNR6D9XbSE/MsVqb71C2mvRhePuZRL
 k64Lx4+d28LcIk3akHMl9HeBPIvEsn94aC2K+oxaCl2Dv/tAsj62kypSh1/t
 -----END RSA PRIVATE KEY-----"""
 
-# --- CONVERSATION STATES (GHOST NAME) ---
+# --- GHOST NAME STATES ---
 ILK_ISIM, IKINCI_ISIM = range(2)
 
-# --- YARDIMCI FONKSİYONLAR ---
+# --- KÖMEKÇI FUNKSIÝALAR ---
 
 def is_ip_address(text):
     try:
@@ -226,48 +231,71 @@ def clean_data(data):
     if isinstance(data, list):
         return ", ".join([str(x) for x in data if x])
     if data is None:
-        return "Bilinenok"
+        return "Nämälim"
     return str(data)
 
-async def chat_with_llama(user_message: str):
+async def chat_with_llama(user_id: int, user_message: str):
     headers = {
         "Authorization": f"Bearer {LLAMA_API_KEY}",
         "Content-Type": "application/json"
     }
-    # Sistem mesajını daha "Hacker" tarzı yaptık
-    system_prompt = (
-        "Senin adın Ghost Unified. Siber güvenlik, kodlama ve ağ yönetimi konularında uzman, "
-        "gizli ama yardımsever bir yapay zekasın. Cevaplarını kısa, teknik ve net ver. "
-        "Markdown kullanarak cevapla ve emojileri havalı bir şekilde kullan."
-    )
+
+    # 1. Ýady barlamak (20 sekunt dolan bolsa pozmak)
+    current_time = time.time()
     
+    if user_id not in user_memory:
+        user_memory[user_id] = {'history': [], 'last_time': current_time}
+    
+    last_interaction = user_memory[user_id]['last_time']
+    if current_time - last_interaction > MEMORY_TIMEOUT:
+        user_memory[user_id]['history'] = []  # Ýady poz
+    
+    # Wagty täzelemek
+    user_memory[user_id]['last_time'] = current_time
+
+    # 2. Sistemanyň prompdy
+    system_prompt = (
+        "Seniň adyň Ghost Unified. Kiber howpsuzlyk, kodlamak we tor (network) meselelerinde ökde, "
+        "gizlin we peýdaly bir emeli aň (AI). Jogaplaryň gysga, tehniki we düşnükli bolsun. "
+        "Markdown ulanyp jogap ber. Türkmen dilinde gürle."
+    )
+
+    # 3. Taryhy gurmak
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(user_memory[user_id]['history'])
+    messages.append({"role": "user", "content": user_message})
+
     request_body = {
         "model": "Meta-Llama-3.3-70B-Instruct",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
-        ],
+        "messages": messages,
         "max_completion_tokens": 1000
     }
+
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(LLAMA_API_URL, headers=headers, json=request_body, timeout=60.0)
             response.raise_for_status()
             result = response.json()
-            return result['choices'][0]['message']['content']
+            
+            ai_content = result['choices'][0]['message']['content']
+            
+            # AI jogabyny we ulanyjy soragyny taryha goşmak
+            user_memory[user_id]['history'].append({"role": "user", "content": user_message})
+            user_memory[user_id]['history'].append({"role": "assistant", "content": ai_content})
+            
+            return ai_content
         except Exception as e:
-            return f"❌ AI Bağlantı Hatası: {str(e)}"
+            return f"❌ AI Birikme Ýalňyşlygy: {str(e)}"
 
-# --- YENİ EKLENEN ÖZELLİKLER (QR, ŞİFRE, KRİPTO) ---
+# --- YENI ÖZELLİKLER (QR, ŞIFRE, KRIPTO) ---
 
 async def qr_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Kullanım: `/qr metin` veya `/qr link`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ Ulanylyşy: `/qr <tekst>` ýa-da `/qr <link>`", parse_mode=ParseMode.MARKDOWN)
         return
 
     text = " ".join(context.args)
     
-    # QR kodu bellekte oluştur
     qr = qrcode.QRCode(version=1, box_size=10, border=4)
     qr.add_data(text)
     qr.make(fit=True)
@@ -278,7 +306,7 @@ async def qr_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     img.save(bio, 'PNG')
     bio.seek(0)
 
-    await update.message.reply_photo(photo=bio, caption=f"✅ **QR Kod Hazırlandı**\n`{text}`", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_photo(photo=bio, caption=f"✅ **QR Kod Taýýar**\n`{text}`", parse_mode=ParseMode.MARKDOWN)
 
 async def generate_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     length = 16
@@ -286,61 +314,93 @@ async def generate_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     password = "".join(random.choice(chars) for _ in range(length))
     
     msg = (
-        "🔐 **Ghost Güvenli Şifre**\n"
+        "🔐 **Ghost Howpsuz Açar Sözi**\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"`{password}`\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "⚠️ *Kopyalamak için üzerine tıkla.*"
+        "⚠️ *Kopýalamak üçin üstüne basyň.*"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
+async def crypto_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Piyasa değeri en yüksek coinleri listeler."""
+    url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=15&page=1&sparkline=false"
+    
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
+    try:
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        
+        text = "📊 **Kripto Bazary (Top 15)**\n━━━━━━━━━━━━━━━━━━\n"
+        for coin in data:
+            symbol = coin['symbol'].upper()
+            price = coin['current_price']
+            name = coin['id']
+            text += f"• `{symbol}`: ${price} (`/coin {name}`)\n"
+            
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        await update.message.reply_text("❌ Maglumat alyp bolmady. Biraz soňra synanyşyň.")
+
 async def crypto_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Kullanım: `/coin bitcoin`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            "❌ Ulanylyşy: `/coin <coin_ady>`\n"
+            "Mysal: `/coin bitcoin`, `/coin ethereum`, `/coin solana`\n"
+            "Doly sanaw üçin: `/list`", 
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
         
-    coin = context.args[0].lower()
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd,try"
+    coin_id = context.args[0].lower()
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd,try,rub"
     
     try:
         r = requests.get(url, timeout=10).json()
-        if coin in r:
-            usd = r[coin]['usd']
-            try_price = r[coin]['try']
+        if coin_id in r:
+            usd = r[coin_id]['usd']
+            try_price = r[coin_id]['try']
+            rub_price = r[coin_id]['rub']
             text = (
-                f"💰 **{coin.upper()} Piyasası**\n"
+                f"💰 **{coin_id.upper()} Bahasy**\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"🇺🇸 USD: `${usd}`\n"
-                f"🇹🇷 TRY: `₺{try_price}`"
+                f"🇹🇷 TRY: `₺{try_price}`\n"
+                f"🇷🇺 RUB: `₽{rub_price}`"
             )
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         else:
-            await update.message.reply_text(f"❌ '{coin}' bulunamadı. Tam adını yazın (örn: bitcoin).")
+            await update.message.reply_text(
+                f"❌ '{coin_id}' tapylmady.\n"
+                "⚠️ Haýyş, doly adyny ýazyň (meselem: 'btc' däl, 'bitcoin').\n"
+                "Kripto atlaryny görmek üçin: `/list`"
+            )
     except Exception as e:
-        await update.message.reply_text("❌ Fiyat çekilemedi. Daha sonra deneyin.")
+        await update.message.reply_text("❌ Baha maglumaty alynmady.")
 
-# --- START VE MENÜ İŞLEMLERİ ---
+# --- START VE MENU ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    # Hacker temalı GIF
     gif_url = "https://media.giphy.com/media/YQitE4YNQNahy/giphy.gif"
     
     welcome_text = (
-        f"🕵️‍♂️ **Sisteme Erişim Onaylandı, {user.first_name}.**\n\n"
-        "Ben **Ghost Unified Bot**. Dijital gölge asistanınım.\n"
-        "Yapmak istediğin işlemi aşağıdan seç veya komut gir:\n\n"
-        "• `/qr <metin>` - QR Kod Yap\n"
-        "• `/pass` - Şifre Üret\n"
-        "• `/coin <isim>` - Kripto Fiyatı\n"
-        "• `happ://crypt...` - Link Kırıcı\n"
-        "• `8.8.8.8` - IP Sorgu"
+        f"🕵️‍♂️ **Sisteme Giriş Tassyklandy, {user.first_name}.**\n\n"
+        "Men **Ghost Unified Bot**. Seniň sanly kömekçiň.\n"
+        "Komandalary saýla ýa-da ýaz:\n\n"
+        "• `/qr <tekst>` - QR Kod Ýasa\n"
+        "• `/pass` - Açar Sözi Döret\n"
+        "• `/list` - Kripto Bazary\n"
+        "• `/coin <at>` - Kripto Bahasy\n"
+        "• `happ://crypt...` - Link Çözüji\n"
+        "• `8.8.8.8` - IP Maglumat"
     )
 
     keyboard = [
         [
             InlineKeyboardButton("🔐 Decrypt Info", callback_data='help_decrypt'),
-            InlineKeyboardButton("👻 Ghost İsim", callback_data='help_ghost')
+            InlineKeyboardButton("👻 Ghost Ady", callback_data='help_ghost')
         ],
         [
             InlineKeyboardButton("🌐 IP & Whois", callback_data='help_ip'),
@@ -357,7 +417,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception:
-        # GIF yüklenmezse normal mesaj at
         await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -366,25 +425,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     msg = ""
     if query.data == 'help_decrypt':
-        msg = "🔐 **Decrypt Modu**\n`happ://crypt` ile başlayan şifreli linkleri sohbete yapıştır, otomatik çözerim."
+        msg = "🔐 **Decrypt Modu**\n`happ://crypt` bilen başlaýan şifreli linkleri iberiň, men oları çözüp bereýin."
     elif query.data == 'help_ghost':
-        msg = "👻 **Ghost İsim**\nAdını tersten yazılan Unicode karakterine çevirmek için `/ghost` komutunu kullan."
+        msg = "👻 **Ghost Ady**\nAdyňy ters ýazylan Unicode harplaryna öwürmek üçin `/ghost` komandasyny ulan."
     elif query.data == 'help_ip':
-        msg = "🌐 **Ağ Araçları**\n• Bir IP adresi yazarsan (örn: `1.1.1.1`) konumunu bulurum.\n• `/whois google.com` ile domain sorgularım."
+        msg = "🌐 **Tor Gurallary**\n• IP salgysyny ýazsaň (mysal: `1.1.1.1`) ýerleşýän ýerini taparyn.\n• `/whois google.com` domen maglumatlaryny berer."
     elif query.data == 'help_ai':
-        msg = "🤖 **Ghost AI**\nBana herhangi bir soru sorabilirsin. Kodlama, güvenlik veya sohbet..."
+        msg = "🤖 **Ghost AI**\nMaňa islendik sorag berip bilersiňiz. Eger 20 sekunt gürleşmesek, men öňki gürrüňleri unudýaryn (hafıza arassalanýar)."
 
     await query.edit_message_caption(caption=msg, parse_mode=ParseMode.MARKDOWN)
 
 # --- GHOST NAME MANIPULATION ---
 
 async def ghost_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👻 **Ghost Mode:**\nÖnce **yazıdan SONRA** görünecek kısmı yaz (Line):", parse_mode='Markdown')
+    await update.message.reply_text("👻 **Ghost Mode:**\nIlki bilen **ýazgynyň SOŇUNDA** görünjek bölegi ýazyň (Line):", parse_mode='Markdown')
     return ILK_ISIM
 
 async def ilk_bolum_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['ilk'] = update.message.text
-    await update.message.reply_text("Şimdi **yazıdan ÖNCE** görünecek kısmı yaz (Ghost):")
+    await update.message.reply_text("Indi **ýazgynyň BAŞYNDA** görünjek bölegi ýazyň (Ghost):")
     return IKINCI_ISIM
 
 async def ikinci_bolum_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -393,27 +452,25 @@ async def ikinci_bolum_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
     RLI = "\u2067"
     manipule_edilmis = f"{RLI}{RLI}{RLI}{ilk}{RLI}{ikinci}"
 
-    await update.message.reply_text(f"✅ Hazırlandı! Aşağıdaki butona basarak paylaşabilirsin.")
-
-    keyboard = [[InlineKeyboardButton("📋 Sonucu Paylaş", switch_inline_query_current_chat=manipule_edilmis)]]
+    keyboard = [[InlineKeyboardButton("📋 Netijäni Paýlaş", switch_inline_query_current_chat=manipule_edilmis)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        f"Kopyalamak için:\n`{manipule_edilmis}`",
+        f"✅ Taýýar! Kopýalamak üçin:\n`{manipule_edilmis}`",
         parse_mode='Markdown',
         reply_markup=reply_markup
     )
     return ConversationHandler.END
 
 async def ghost_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ İptal edildi.")
+    await update.message.reply_text("❌ Ýatyryldy.")
     return ConversationHandler.END
 
-# --- WHOIS & IP & DECRYPT & AI (MERKEZİ MANTIK) ---
+# --- WHOIS & IP & DECRYPT & AI ---
 
 async def whois_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Domain girin. Örn: `/whois google.com`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ Domen giriziň. Mysal: `/whois google.com`", parse_mode=ParseMode.MARKDOWN)
         return
 
     query = context.args[0]
@@ -422,39 +479,40 @@ async def whois_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         w = whois.whois(query)
         if not w.domain_name:
-             await update.message.reply_text(f"❌ **{query}** bulunamadı.")
+             await update.message.reply_text(f"❌ **{query}** tapylmady.")
              return
 
         sonuc = (
-            f"🌐 **Domain WhoIS**\n"
+            f"🌐 **Domen WhoIS**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"🏷 **Domain:** `{clean_data(w.domain_name)}`\n"
+            f"🏷 **Domen:** `{clean_data(w.domain_name)}`\n"
             f"🏢 **Registrar:** `{clean_data(w.registrar)}`\n"
-            f"📅 **Kayıt:** {clean_data(w.creation_date)}\n"
+            f"📅 **Hasaba alyş:** {clean_data(w.creation_date)}\n"
             f"⌛ **Bitiş:** {clean_data(w.expiration_date)}\n"
-            f"🌍 **Ülke:** {clean_data(w.country)}\n"
+            f"🌍 **Ýurt:** {clean_data(w.country)}\n"
             f"⚙️ **NS:** `{clean_data(w.name_servers)}`"
         )
         await update.message.reply_text(sonuc, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
-        await update.message.reply_text(f"❌ Hata: {str(e)}")
+        await update.message.reply_text(f"❌ Ýalňyşlyk: {str(e)}")
 
 async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    user_id = update.effective_user.id
     
-    # 1. DURUM: HAPP DEKOD
+    # 1. HAPP DEKOD
     if text.startswith("happ://crypt"):
         await handle_decryption(update, context, text)
         return
 
-    # 2. DURUM: IP ADRESİ
+    # 2. IP ADRESI
     if is_ip_address(text):
         await handle_ip_lookup(update, context, text)
         return
 
-    # 3. DURUM: AI CHAT
+    # 3. AI CHAT
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    ai_response = await chat_with_llama(text)
+    ai_response = await chat_with_llama(user_id, text)
     try:
         await update.message.reply_text(ai_response, parse_mode=ParseMode.MARKDOWN)
     except Exception:
@@ -462,31 +520,31 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_ip_lookup(update, context, ip):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    loading_msg = await update.message.reply_text(f"🔍 `{ip}` taranıyor...", parse_mode=ParseMode.MARKDOWN)
+    loading_msg = await update.message.reply_text(f"🔍 `{ip}` gözlenýär...", parse_mode=ParseMode.MARKDOWN)
     
     try:
         response = requests.get(f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,query", timeout=10)
         data = response.json()
 
         if data['status'] == 'fail':
-            await loading_msg.edit_text("❌ Geçersiz IP.")
+            await loading_msg.edit_text("❌ Nädogry IP.")
             return
 
-        google_maps_link = f"https://www.google.com/maps/search/?api=1&query={data['lat']},{data['lon']}"
+        google_maps_link = f"https://www.google.com/maps?q={data['lat']},{data['lon']}"
         sonuc = (
-            f"📡 **IP İstihbaratı**\n"
+            f"📡 **IP Maglumaty**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🖥 **IP:** `{data['query']}`\n"
-            f"🌍 **Yer:** {data['country']} ({data['countryCode']})\n"
-            f"🏙 **Şehir:** {data['regionName']} / {data['city']}\n"
-            f"📮 **Posta:** {data['zip']}\n"
+            f"🌍 **Ýurt:** {data['country']} ({data['countryCode']})\n"
+            f"🏙 **Şäher:** {data['regionName']} / {data['city']}\n"
+            f"📮 **Poçta:** {data['zip']}\n"
             f"🏢 **ISP:** {data['isp']}\n"
-            f"🏢 **Org:** {data['org']}\n"
-            f"📍 [Konum Haritası]({google_maps_link})"
+            f"🏢 **Gurama:** {data['org']}\n"
+            f"📍 [Haritada Gör]({google_maps_link})"
         )
         await loading_msg.edit_text(sonuc, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=False)
     except Exception as e:
-         await loading_msg.edit_text(f"❌ Hata: {str(e)}")
+         await loading_msg.edit_text(f"❌ Ýalňyşlyk: {str(e)}")
 
 async def handle_decryption(update, context, encrypted_text):
     key_pem = None
@@ -505,7 +563,7 @@ async def handle_decryption(update, context, encrypted_text):
         key_pem = KEY_1
         prefix_length = len("happ://crypt/")
     else:
-        await update.message.reply_text("❌ Bilinmeyen happ formatı.")
+        await update.message.reply_text("❌ Nämälim happ formaty.")
         return
 
     data_to_decrypt = encrypted_text[prefix_length:]
@@ -518,20 +576,20 @@ async def handle_decryption(update, context, encrypted_text):
         decrypted_bytes = cipher.decrypt(encrypted_bytes, sentinel)
 
         if decrypted_bytes == sentinel:
-            await update.message.reply_text("❌ Şifre çözülemedi.")
+            await update.message.reply_text("❌ Şifre çözülip bilinmedi.")
             return
 
         result = decrypted_bytes.decode('utf-8')
-        await update.message.reply_text(f"🔓 **Deşifre Başarılı:**\n\n`{result}`", parse_mode='Markdown')
+        await update.message.reply_text(f"🔓 **Deşifre Edildi:**\n\n`{result}`", parse_mode='Markdown')
     except Exception as e:
-        await update.message.reply_text(f"❌ Kriptografi Hatası:\n{str(e)}")
+        await update.message.reply_text(f"❌ Kriptografi Ýalňyşlygy:\n{str(e)}")
 
 # --- MAIN ---
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Conversation Handler (Ghost Name)
+    # Ghost Name Handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('ghost', ghost_start)],
         states={
@@ -542,22 +600,23 @@ def main():
     )
     app.add_handler(conv_handler)
 
-    # Standart Komutlar
+    # Standart Komandalar
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("whois", whois_command))
     
-    # YENİ EKLENEN KOMUTLAR
+    # Täze Komandalar
     app.add_handler(CommandHandler("qr", qr_generate))
     app.add_handler(CommandHandler("pass", generate_password))
     app.add_handler(CommandHandler("coin", crypto_price))
+    app.add_handler(CommandHandler("list", crypto_list))
     
-    # Buton Handler
+    # Callback (Düwme) Handler
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # Genel Mesaj Handler (En altta olmalı)
+    # Ähli Mesajlary Gözegçilik (Iň soňunda bolmaly)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages))
 
-    print("Ghost Unified Bot (Sürüm 2.0) Aktif...")
+    print("Ghost Unified Bot (v3.0) Işjeň - Türkmençe...")
     app.run_polling()
 
 if __name__ == '__main__':
