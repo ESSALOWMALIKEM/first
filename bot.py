@@ -4,6 +4,9 @@ import shutil
 import logging
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from keep_alive import keep_alive
+
+keep_alive()
 
 # Loglama ayarları (Hataları görmek için)
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
