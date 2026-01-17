@@ -15,6 +15,9 @@ from telegram.ext import (
     ContextTypes
 )
 from telegram.constants import ParseMode
+from keep_alive import keep_alive
+
+keep_alive()
 
 # --- Konfigürasyon ---
 DEEPSEEK_API_KEY = "sk-aa03b3e8a6b24a539b279dc85dd93b2a"  # API key'iniz
