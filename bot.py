@@ -1,483 +1,329 @@
-import os
 import logging
-import tempfile
-from pathlib import Path
-from typing import Optional
-from openai import OpenAI
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    filters,
-    ContextTypes
-)
-from telegram.constants import ParseMode
+import base64
+import html
+import requests
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_v1_5
 from keep_alive import keep_alive
 
 keep_alive()
 
-# --- Konfigürasyon ---
-DEEPSEEK_API_KEY = "sk-aa03b3e8a6b24a539b279dc85dd93b2a"  # API key'iniz
-TELEGRAM_BOT_TOKEN = "8570087251:AAFOTBbzJXFFHRx6h2gTm_StN39f3nX9_0A"  # BotFather'dan alınan token
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB maksimum dosya boyutu
-SUPPORTED_EXTENSIONS = {'.txt', '.pdf', '.py', '.js', '.java', '.cpp', '.c', 
-                        '.html', '.css', '.json', '.xml', '.csv', '.md', '.log'}
+# --- BOT TOKEN ---
+TOKEN = "8553766922:AAGsPE0UN_YSS1QsO1PAfPB2GddC4c4IvKs"  # İstediğiniz token'ı kullanabilirsiniz
 
-# Konuşma durumları
-SELECTING_ACTION, READING_FILE = range(2)
+# --- ENCRYPT API ---
+ENCRYPT_API = 'https://crypto.happ.su/api.php'
 
-# --- Logging ---
+# --- DECRYPTION KEYS ---
+KEY_1 = """-----BEGIN RSA PRIVATE KEY-----
+MIICXwIBAAKBgQCxsS7PUq1biQlVD92rf6eXKr9oG1/SrYx3qWahZP+Jq35m4Wb/
+Z+mB6eBWrPzJ/zZpZLWLQorcvOKt+sLaCHyH1HLNkti4jlaEQX6x97XgBm8GK08+
+lLLWquFDhWRNxsrfzJyNdpVopzBRmCJKTc8ObYyPbrv9T35a8Kd5WqjnUwIDAQAB
+AoGBAJoqe85skPPF5U7jwRM2YhUJhZ+xgGWtJR3834pPslWjcLuZ/F7DrRiF7ZnF
+5FztDCxMsCXuycPSLWl9EulQS5mrL/fnwpK2jVE8O1Em9RsBOOrWwzuZnAuooRIb
+/8zC0fvH2oGkk60zSKycMe69uvYUDjhvULX2Spjmf9CS9/HhAkEA3I797En/DrpA
+Zz6NM4GqZ1mkH0kEX/kAHLP1lBgYL1kVK455EG/ecJkMJmtK7A+fWw0N0IcxrpYA
+bbOAo19vjwJBAM4+0MAZ8TIZUk6Rs2gYUo04A6mYUy5MWtRa9pyFIgD71oHDR+1j
+rnPLqQyCj0tfbZBc1iVgsisJBpocC8sKaf0CQQDRNd3Mxb/nY2p1xJLBmaxezlvs
+xSEePB4MG/PFXzmJqBF5uHJD0imIWtR4mOt/ka4R+wbwl1zcAzMy28MYtQ0nAkEA
+uUILWML0uL+uAw01TeerH1aVU52T+h5z6BPdOTMNHD0arWywCzhi13i03JvaAyYw
+0F/Tq7dz0txEpeFTZopwMQJBANnHbzB87/xTjDQA4/L8sSU8m0vM1nRWmJIaAC94
+pcM+KDGLnbBhWrvZGy8Zg8vQwNvdvCLvylk0jVTTFqW3ibM=
+-----END RSA PRIVATE KEY-----"""
+
+KEY_2 = """-----BEGIN RSA PRIVATE KEY-----
+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
+-----END RSA PRIVATE KEY-----"""
+
+KEY_3 = """-----BEGIN RSA PRIVATE KEY-----
+MIIJJwIBAAKCAgEAlBetA0wjbaj+h7oJ/d/hpNrXvAcuhOdFGEFcfCxSWyLzWk4S
+AQ05gtaEGZyetTax2uqagi9HT6lapUSUe2S8nMLJf5K+LEs9TYrhhBdx/B0BGahA
++lPJa7nUwp7WfUmSF4hir+xka5ApHjzkAQn6cdG6FKtSPgq1rYRPd1jRf2maEHwi
+P/e/jqdXLPP0SFBjWTMt/joUDgE7v/IGGB0LQ7mGPAlgmxwUHVqP4bJnZ//5sNLx
+WMjtYHOYjaV+lixNSfhFM3MdBndjpkmgSfmgD5uYQYDL29TDk6Eu+xetUEqry8yS
+PjUbNWdDXCglQWMxDGjaqYXMWgxBA1UKjUBWwbgr5yKTJ7mTqhlYEC9D5V/LOnKd
+6pTSvaMxkHXwk8hBWvUNWAxzAf5JZ7EVE3jt0j682+/hnmL/hymUE44yMG1gCcWv
+SpB3BTlKoMnl4yrTakmdkbASeFRkN3iMRewaIenvMhzJh1fq7xwX94otdd5eLB2v
+RFavrnhOcN2JJAkKTnx9dwQwFpGEkg+8U613+Tfm/f82l56fFeoFN98dD2mUFLFZ
+oeJ5CG81ZeXrH83niI0joX7rtoAZIPWzq3Y1Zb/Zq+kK2hSIhphY172Uvs8X2Qp2
+ac9UoTPM71tURsA9IvPNvUwSIo/aKlX5KE3IVE0tje7twWXL5Gb1sfcXRzsCAwEA
+AQKCAgAK3VHMFCHlQaiqvHNPNMWRGp0JJl27Ulw3U1Q9p+LC3OWNknyvpxC5EJPQ
+bTUXhlO2A9AiDOXmaj5EMavTAaj0tzWhLlrVVQ/CSJYS4sVyAY67GyTpOIxmYtPB
+E3YY6vTU1SSoU2dqnMDnfwAbM2g0QXatXYRDGPYLLNHHp7R27IBpBTJeDwb2qEA1
+BBC/3WXsfVy6cfhWrrB7fH4F9tuEtG+sp+N2fbDcFnDH1hbQAm+HEXKzWMpRcSmX
++rQ2wDlLW/N3utI+TzP4Vx5zTuT3QCsDYzeRgSJ4CjMwKKSGZ3QDF5cDCVJdsJ24
+fRl+mpBWoLqqBS7gzFVYsTx88GNs5jl9D7ZndIEOKYhtA00NgF+0N1Vs7IbgfoBf
+wABSFoiukBcre2NvJ4jVxApy09IiN6E/HBZ/qhH3q+1k9nLFgzH9VsBXuucgjlSF
+XzVLLQilfsd7LEaX8ytGDAiAC3RLbIhDRX3ruv0ufRSwhUoGd4ps+cgHrKGUGqz4
+pdjOzWFNTzpTTYuxkoMbklI+HIFQcstNLW0mryBcWhldqLhYNGH5w4fX+J/wkxbH
+1Yh9slPWT+WX69/l9myysscXxSlev9Ycty4rNWt9kohNHvBd5ZxlePD5ngTmCZ2P
+jisUS1Kvmy9rjzRjP2qNoxmXmTbp3QJymuF1RjtRHxlqHGVlgQKCAQEA0S/SnC+B
+UlUxxCVQ+qNE8FAe5EWdNgSlz1ep5NGcOBUgpFStHJBGdzSc1Ht6MuBd+2Gqfzi4
+6CR5BbyaC9i3P0X4347wKjrzPQ39l1kGideRKEKMAbmj2SdaU7kYWFhddurGssp4
+xzojNG0BYkR/0kEnHeCu/RJ6HVwv5K5vyhYsAwKeWeTS3T06KElgy4uNNRRAqI9Z
+JamrU7ZfIQ7YBHsCWlgFwx7Hu7rQS8dOPmd4TW0Xs32yEDfDymw98e4kxNME01Z9
+Q55uShLwXo4g+wp/6SYL363OyR/MqSAW66IthPqz6WnJ37hmk2SZsUip9tBHPdJy
+vACHeNR9SP4VMwKCAQEAtTvMeW0QvNWK7+VM2cnm2viFPpqGWDaccI6Zct/Qb6cO
+05xdRtarm/QjM3vXjjN4ALj4gPkz014oPEcHJe5Y6ma1tGmy01cltvYoUsfxYHX2
+jUiaI9EmmOIR/9gSiAZn+P9RjNx9Q/hHT9ul+H5FnitC9wV0TZ7egu3ROKuZ7t5E
+hdogO5lC8qUn6GrVIdj9eDAGkHWdO6v3cqYuP6cV6yiBOK2CikW+MnLC8yXGwvWX
+7iW4/2f0xBP+NWgXPzZu627FC8EDmZv8TEGppd5RsJNcQOraXnq7foEzHCB2MsvJ
+rDbHAmTqKaWKzoxR+dzJOSt1sHbhNXoKKnsEqd112QKCAQAcq2c8DK62sAJwFYUx
+tKrAHNr/AiN3wc9PyX35ZFj6vrqIiypmncdqkwVjgcDPtDxtNYd+hDGjb0w+4whh
+00PaIibnzNlRkF7B4Wb+FS92ONsmH2i828p++ovAqb+SbBnzMF4nJuTCuU8V4lKs
+OyMhl9hame6htKST3Yya1OVxVvSVPQii3V+g/sE3wEbJ3shtm+b4sxzOsqBOitIi
+37vvcURzSVkQ0ukg64uctyYcG2Y7hlYXPYToAByPY6Jhw/e6GgmxRUtJty76a/oR
+m30dquS4+YPrFhEfM4KDM2iwxrtiXFHIDb2jMcytKr59s63Hq+f3qx4aciAfCVBa
+bqhNAoIBAFZl8p20k/Uh7EFfVBrDeO3M6mCk9ATbzAqQwLCV6F1CC/xvn7wknN0V
+Ly7dDC77dGsLw1Rg+Qb77TyHM+4uSW89lcQzW5ALDKzDfwevz++HbQl/ohQPIlJh
+++i3DmaQf0KiHTOE7abYls6ITQBA2lmEEEGI9SAH69YJH+PfUtwgVBRnn1QqRVM9
+zt+rBn5DXtrMMmTt3Q5UdfvPI18u/XEE902Y0hGvG/Qa57tYt/+7azmZ/C6uVW6g
+hWDahbKZ9ZkBTqjC1D+HsGh+KS0s5k7CgYllLMM7yWSOnVn8U7z1j+gsmQUYLNW7
+2IeNN4thaQB7Knj8w3JmArCrwtZkAEkCggEANfI5YqEYgq/Mt4NeTTHG5PoRuy1c
+RzJLB8QCRF5O2GLij/jl61zSdbeczsNqJzufnxKx49Okkesy9xKVAcT2QMJ55V38
+wekpJk0p3wdEhgdBLhOO6kY6R9dhy74e8LFDERH/MfRuvOhBcLqjGb6xGnedf3yy
+IFm5Mt4aWOVxLyqUQGF76Dj+PQXjwmQBjxsgxrBAf2UVm/4eb8aX/2xlWDjJ8eXX
+R+4PaoA7jR4tsfW7z0iYqA+GUQ0zTcINJdoSTbypxkT8iVQI3VAWcKILnNcoZS4Q
+1n9PKHp8L9qHLGlIgt2jOpwKaYDChgoJI5+9WJFarSi7yX1pBXgMfD7aHA==
+-----END RSA PRIVATE KEY-----"""
+
+KEY_4 = """-----BEGIN RSA PRIVATE KEY-----
+MIIJKQIBAAKCAgEA3UZ0M3L4K+WjM3vkbQnzozHg/cRbEXvQ6i4A8RVN4OM3rK9k
+U01FdjyoIgywve8OEKsFnVwERZAQZ1Trv60BhmaM76QQEE+EUlIOL9EpwKWGtTL5
+lYC1sT9XJMNP3/CI0gP5wwQI88cY/xedpOEBW72EmOOShHUm/b/3m+HPmqwc4ugK
+j5zWV5SyiT829aFA5DxSjmIIFBAms7DafmSqLFTYIQL5cShDY2u+/sqyAw9yZIOo
+qW2TFIgIHhLPWek/ocDU7zyOrlu1E0SmcQQbLFqHq02fsnH6IcqTv3N5Adb/CkZD
+DQ6HvQVBmqbKZKf7ZdXkqsc/Zw27xhG7OfXCtUmWsiL7zA+KoTd3avyOh93Q9ju4
+UQsHthL3Gs4vECYOCS9dsXXSHEY/1ngU/hjOWFF8QEE/rYV6nA4PTyUvo5RsctSQ
+L/9DJX7XNh3zngvif8LsCN2MPvx6X+zLouBXzgBkQ9DFfZAGLWf9TR7KVjZC/3Ns
+uUCDoAOcpmN8pENBbeB0puiKMMWSvll36+2MYR1Xs0MgT8Y9TwhE2+TnnTJOhzmH
+i/BxiUlY/w2E0s4ax9GHAmX0wyF4zeV7kDkcvHuEdc0d7vDmdw0oqCqWj0Xwq86H
+fORu6tm1A8uRATjb4SzjTKclKuoElVAVa5Jooh/uZMozC65SmDw+N5p6Su8CAwEA
+AQKCAgBLlgyNoqFZxWjZZmHiSXr7bUdxCEkfkM8Nn8dcky12O8fB6mv39LZcrF22
+u+UIDIgec31Igq1G4e5ojd62LDAQLCnKlp2SJMeLo1ILTYTYtPJuJUqSolPuhzeK
+bFl1ouHp88e2sUMpmwJT6UpFj0L6hqOr4lkjfC1kktXPXvSe3lpDvIYXBrlFU5sl
+PP3WLE5RaLW+w4gE6nt9+FS6xkJHQHhP1odE+z8B0EV/HdhvKTCnWz4bGj4azlkP
+hNdl3EKLS6axTlti/hq9yT6d7owlu4sKnkqGF18deei8hoJ4eWvHo7a12BfQHuKJ
+JJ6Qgb1jzQv+tm9XEZ7qCxaMtwHabrjnIDM57xvJAO4fKX5L3/hN+Zx8q4dFsHhO
+OnJ1As18YChkYJXF9zcUGEztoiDBUQJAIrMJHWFJOtxj78fP18LYOjbhUL1H3IdK
+LLr1duX9aGM9lAgJV66l/rWlyePh+pBMriTbOAnXEsQFVvjzzzyBZznBZYCJow/K
+mZO3WciFbSETqq3FqoE3HwvxsjlaC4gpHWqa40lGtjFvPnIHS6MbH7LwVcAldDrj
+uqNJMd5lWhPAnYVj7JYER230X2HQ3BBrrAZ7Zae1lrJfdQs0zjYiyHdOAmTEtWnk
+uSadknecHrL4RYoZtdTriZT42N+tcbJAb5GLr3FOVwV6IhEEWQKCAQEA/AZ7xHIZ
+mI6KcWWoYQVP2Ibmjv+DZYGAtyoYd+hnV9KiGAddJWknbZycCZU4qyG63+wEEFEo
+PJ3KfEqUwGHVK5jaexLP/BbgR9nwt3UF1IhDs3D8UrS79YFihuvcz+hlGDsrcTj8
+DZkoVAsMom0I4lsTNqauH+o0I6UYLrRswcIlbKG6yJN1B08Nbz88l8qCLLhRMXJ2
+yxfSch20T28UggS2bZnpEws5DY5I1C6irGRIyaLNVEi076Dp9OZ8RCnXn7KfXnZn
+tl0AvQVUaOvTt2fh9X4Qnk5XADfUoZ2it1HIinNQOLpnhoNa2/cpGoG3tPnXaY8N
+NC3dt/dyCahTJQKCAQEA4MPSOuD98dv3V3GY/ODyDphzQOHxp+dHiDcY1TjLcJs3
+XVuPgMSL0GGBrhn5yiKKjir2mNdsdDtS2qwZVp2fZI2oUunMMZ2tila+Wa+AMUZy
+vUP6OFRs/qu24mVsNizV5Ad7/d/mEmfoMnRQk0Eg0dx1GNelhcdd0GvyaKAu1/uv
+Kt97BaKLHhfC41keO1GNGXeASSSfIa5jlXQngVSPzh5C+rhtgv+z9KkyGHXUxifl
+isQlgKmDAXBSwNZxoVUYxqCFRX9RNQkQmokws+z3k02w/gF+L1bkw1UFsBfcsU1e
+Wfi0q2h/B6CLjspsWIpppEK13DWs+oD3qx+67LwTgwKCAQEAxrEF2rZp35BhLU2M
+FhFuBbM1Cf//w4L5y23wpHghIWf6Sx9jHB9u6kfR7OwsJR8OiYM1IPga1M9B2AOk
+ipeWzCxR8z29o20VnRABa2FjG0/isBGfnETI+qDq4JwLFg6NxTDA6x6V+NKKrNeZ
+OmTj4DEVULzQAnFOcduy2P99zrQVdTN8Yq1+UijM2qvsRW9ueXtG58jqRuudCkLI
+6OcWL/svJ/Fzg4QRktJeMIojze2yROWJI62+mD0wtdcQmVyzlj/ozTxkP63K6zrM
+dXuXCr1ns3eT+nqgtJdPl6sDoatkg2KuGEs9WxssAsc1LKSgBJoEbkBNlJmkd2kq
+Ctsd0QKCAQA8mc+m/F67xTkNJJ3BIM1izgvVJJZJVPxeZ6yUYLnJZLAqxbMNXvDr
+gD68uFg2/dUpu7+9OegN9qjCOMCkL9939xG5OTxK7F6L/BNajw0bPAlXqmpeobS5
+fYbTx9DDUpdg4fu2WZXoxIdAg0fuTBMTQkN4LTx9s2FB/rjfKME4jq2N+69pt4eW
+14U+Uxrpl3VZtnSqQ+t7408KTsUQA8K6KkKY4vzz4wmcH7pYCf0SaFNldLk/1XRz
+ANvvDmKYwx7o/wKv2EIG8Ki/Ydn1ySB/YOUltzVUgjMvz063SdfBHkEgNQRRat1F
+Ky41k7JetQMCvNHXy8kVyYv9YZK+nX8NAoIBAQCT1QG6UYZFHbdXuxmyDxVAprLP
+n1SpEy1NBlJLOWjjvUHFENnnUq8zbqPcPFDpXo04UQ8S31+lPXw3cZUpI4oFdrIM
+1h+cPKz7dV4tpZvb3nWqsTqLhtM2KzM+E3ZDjlHgyq/Sw+HLeLHobyI7OlbEnU/v
+ubwQv2xpTvwumflqF9ANkDG3Pm7cYQC7k7jlpLQy5XRuclb9zhPzje0+Ytf7Tnti
+jWyMYnMwh4TbOOhjnL8iLs1D5GeSy2RV30uNR6D9XbSE/MsVqb71C2mvRhePuZRL
+k64Lx4+d28LcIk3akHMl9HeBPIvEsn94aC2K+oxaCl2Dv/tAsj62kypSh1/t
+-----END RSA PRIVATE KEY-----"""
+
+# --- LOGGING ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger(__name__)
 
-# --- DeepSeek İstemcisi ---
-client = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com"
-)
-
-# --- Dosya İşleme Fonksiyonları ---
-async def download_file(file_id: str, context: ContextTypes.DEFAULT_TYPE) -> Optional[Path]:
-    """Telegram'dan dosya indir"""
+# --- ŞİFRELEME FONKSİYONU ---
+def encrypt_link(original_url):
     try:
-        file = await context.bot.get_file(file_id)
-        temp_dir = tempfile.mkdtemp()
-        file_path = Path(temp_dir) / f"downloaded_file"
-        
-        await file.download_to_drive(file_path)
-        logger.info(f"Dosya indirildi: {file_path}")
-        return file_path
+        headers = {'Content-Type': 'application/json'}
+        payload = {'url': original_url.strip()}
+        r = requests.post(ENCRYPT_API, json=payload, headers=headers, timeout=15)
+
+        if r.status_code == 200:
+            data = r.json()
+            encrypted = data.get('new_url') or data.get('encrypted_link') or data.get('url') or data.get('link')
+            if encrypted and encrypted.startswith('happ://'):
+                return encrypted
     except Exception as e:
-        logger.error(f"Dosya indirme hatası: {e}")
-        return None
+        logging.error(f"Encrypt hatası: {e}")
+    return None
 
-def read_file_content(file_path: Path) -> Optional[str]:
-    """Dosya içeriğini oku"""
-    try:
-        if file_path.suffix.lower() == '.pdf':
-            return read_pdf_file(file_path)
-        else:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                return f.read()
-    except Exception as e:
-        logger.error(f"Dosya okuma hatası: {e}")
-        return None
+# --- ŞİFRE ÇÖZME FONKSİYONU ---
+async def decrypt_link(encrypted_text):
+    # HTML'deki prefixMap mantığı
+    key_pem = None
+    prefix_length = 0
 
-def read_pdf_file(file_path: Path) -> Optional[str]:
-    """PDF dosyasını okumak için (basit versiyon)"""
-    try:
-        # PyPDF2 kullanarak
-        try:
-            import PyPDF2
-            text = ""
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
-            return text
-        except ImportError:
-            # PyPDF2 yoksa alternatif
-            return f"PDF dosyası: {file_path.name}\nPDF okumak için PyPDF2 kurulumu gerekli: pip install PyPDF2"
-    except Exception as e:
-        return f"PDF okuma hatası: {e}"
-
-def is_file_supported(filename: str) -> bool:
-    """Desteklenen dosya tipi mi kontrol et"""
-    ext = Path(filename).suffix.lower()
-    return ext in SUPPORTED_EXTENSIONS
-
-# --- DeepSeek API Fonksiyonları ---
-async def ask_deepseek(prompt: str, context: str = "") -> str:
-    """DeepSeek'e soru sor"""
-    try:
-        messages = []
-        
-        if context:
-            messages.append({
-                "role": "system",
-                "content": f"Aşağıdaki dosya içeriğini dikkate al:\n\n{context}\n\n"
-            })
-        
-        messages.append({"role": "user", "content": prompt})
-        
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            max_tokens=2000,
-            temperature=0.7,
-            stream=False
-        )
-        
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"DeepSeek API hatası: {e}")
-        return f"API hatası: {str(e)}"
-
-# --- Telegram Komut Handlers ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/start komutu"""
-    user = update.effective_user
-    welcome_text = f"""
-👋 Merhaba {user.first_name}!
-
-🤖 **DeepSeek AI Bot**'a hoş geldiniz!
-
-✨ **Özellikler:**
-• 📝 Metin sohbeti
-• 📁 Dosya okuma (TXT, PDF, Python, vs.)
-• 💭 Bağlamlı konuşma
-• 🔍 Kod analizi
-
-📋 **Desteklenen Dosyalar:** {', '.join(SUPPORTED_EXTENSIONS)}
-
-**Komutlar:**
-/start - Botu başlat
-/help - Yardım mesajı
-/file - Dosya yükleme modu
-/clear - Konuşma geçmişini temizle
-/model - Model seçimi
-
-📤 **Dosya göndermek için:** /file komutunu kullan veya direkt dosya gönder
-"""
-    
-    keyboard = [
-        [InlineKeyboardButton("📁 Dosya Yükle", callback_data="upload_file"),
-         InlineKeyboardButton("ℹ️ Yardım", callback_data="help")],
-        [InlineKeyboardButton("💬 Sohbet", callback_data="chat_mode"),
-         InlineKeyboardButton("🔄 Model Değiştir", callback_data="change_model")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=reply_markup,
-        parse_mode=ParseMode.MARKDOWN
-    )
-    return SELECTING_ACTION
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/help komutu"""
-    help_text = """
-📚 **Kullanım Kılavuzu**
-
-**1. Metin Sohbeti:**
-Direkt mesaj göndererek sohbet edebilirsiniz.
-
-**2. Dosya Yükleme:**
-• /file komutunu kullanın
-• Veya direkt dosya gönderin
-• Desteklenen formatlar: txt, pdf, py, js, html, css, json, xml, csv, md
-
-**3. Dosya Analizi:**
-Dosya yükledikten sonra:
-1. Dosya içeriği okunur
-2. Dosya hakkında soru sorabilirsiniz
-3. Kod analizi yapabilirsiniz
-
-**4. Komutlar:**
-/start - Botu başlat
-/help - Bu yardım mesajı
-/file - Dosya yükleme modu
-/clear - Geçmişi temizle
-/model - Model seç (chat/coder)
-
-**Örnek Kullanım:**
-1. Bir Python dosyası gönderin
-2. "Bu kod ne yapıyor?" diye sorun
-3. Bot kodunuzu analiz etsin
-"""
-    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
-
-async def file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/file komutu - dosya yükleme modu"""
-    text = """
-📁 **Dosya Yükleme Modu**
-
-Lütfen bir dosya gönderin veya işlemi iptal etmek için /cancel yazın.
-
-**Desteklenen Dosyalar:**
-• Metin dosyaları (.txt, .md, .log)
-• Kod dosyaları (.py, .js, .java, .cpp, .html, .css)
-• Veri dosyaları (.json, .xml, .csv)
-• PDF dosyaları (.pdf)
-
-**Boyut sınırı:** 10MB
-"""
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-    return READING_FILE
-
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/clear komutu - geçmişi temizle"""
-    if 'file_content' in context.user_data:
-        del context.user_data['file_content']
-    if 'current_file' in context.user_data:
-        del context.user_data['current_file']
-    
-    await update.message.reply_text(
-        "✅ Konuşma geçmişi ve dosya içeriği temizlendi!",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/model komutu - model seçimi"""
-    keyboard = [
-        [InlineKeyboardButton("💬 DeepSeek-Chat (Genel)", callback_data="model_chat")],
-        [InlineKeyboardButton("💻 DeepSeek-Coder (Kodlama)", callback_data="model_coder")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "🤖 **Model Seçimi**\n\n"
-        "• 💬 DeepSeek-Chat: Genel sohbet, metin analizi\n"
-        "• 💻 DeepSeek-Coder: Kod yazma, hata ayıklama, optimizasyon\n\n"
-        "Geçerli model: " + context.user_data.get('model', 'deepseek-chat'),
-        reply_markup=reply_markup
-    )
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """İşlemi iptal et"""
-    await update.message.reply_text("İşlem iptal edildi.")
-    return ConversationHandler.END
-
-# --- Mesaj Handlers ---
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Metin mesajlarını işle"""
-    user_message = update.message.text
-    
-    # İşlem modunda mı kontrol et
-    if context.user_data.get('mode') == 'reading_file' and 'file_content' in context.user_data:
-        # Dosya içeriği ile birlikte sor
-        file_content = context.user_data['file_content']
-        current_file = context.user_data.get('current_file', 'dosya')
-        
-        await update.message.reply_chat_action(action="typing")
-        
-        prompt = f"""Dosya: {current_file}
-
-Dosya içeriği:
-{file_content[:3000]}...
-
-Kullanıcı sorusu: {user_message}
-
-Lütfen dosya içeriğine dayanarak cevap ver."""
-        
-        response = await ask_deepseek(prompt)
-        await update.message.reply_text(response)
+    # Hangi anahtarın kullanılacağını prefix'e göre seç
+    if encrypted_text.startswith("happ://crypt4/"):
+        key_pem = KEY_4
+        prefix_length = len("happ://crypt4/")
+    elif encrypted_text.startswith("happ://crypt3/"):
+        key_pem = KEY_3
+        prefix_length = len("happ://crypt3/")
+    elif encrypted_text.startswith("happ://crypt2/"):
+        key_pem = KEY_2
+        prefix_length = len("happ://crypt2/")
+    elif encrypted_text.startswith("happ://crypt/"):
+        key_pem = KEY_1
+        prefix_length = len("happ://crypt/")
     else:
-        # Normal sohbet
-        await update.message.reply_chat_action(action="typing")
-        response = await ask_deepseek(user_message)
-        await update.message.reply_text(response)
+        return None
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Dosya mesajlarını işle"""
-    document = update.message.document
-    
-    # Dosya boyutu kontrolü
-    if document.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(
-            f"❌ Dosya boyutu çok büyük! Maksimum: {MAX_FILE_SIZE/1024/1024:.1f}MB"
-        )
-        return
-    
-    # Dosya tipi kontrolü
-    filename = document.file_name or "dosya"
-    if not is_file_supported(filename):
-        ext = Path(filename).suffix
-        await update.message.reply_text(
-            f"❌ Desteklenmeyen dosya formatı: {ext}\n"
-            f"Desteklenenler: {', '.join(SUPPORTED_EXTENSIONS)}"
-        )
-        return
-    
-    # Dosyayı indir
-    await update.message.reply_text(f"📥 {filename} indiriliyor...")
-    file_path = await download_file(document.file_id, context)
-    
-    if not file_path:
-        await update.message.reply_text("❌ Dosya indirme başarısız!")
-        return
-    
-    # Dosya içeriğini oku
-    await update.message.reply_text("📖 Dosya içeriği okunuyor...")
-    content = read_file_content(file_path)
-    
-    if not content:
-        await update.message.reply_text("❌ Dosya okunamadı!")
-        return
-    
-    # İçeriği kaydet
-    context.user_data['file_content'] = content
-    context.user_data['current_file'] = filename
-    
-    # Kullanıcıya bilgi ver
-    preview = content[:500] + ("..." if len(content) > 500 else "")
-    
-    keyboard = [
-        [InlineKeyboardButton("❓ Bu dosya ne hakkında?", callback_data="analyze_file")],
-        [InlineKeyboardButton("📝 Kod analizi yap", callback_data="analyze_code")],
-        [InlineKeyboardButton("🧹 Temizle", callback_data="clear_file")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    message = f"""
-✅ **Dosya yüklendi:** {filename}
+    # Prefix'i at ve sadece şifreli veriyi al
+    data_to_decrypt = encrypted_text[prefix_length:]
 
-📊 **İstatistikler:**
-• Boyut: {document.file_size} bayt
-• Satır sayısı: {len(content.splitlines())}
-• Karakter: {len(content)}
-
-📋 **Önizleme:**
-{preview}
-
-Artık bu dosya hakkında sorular sorabilirsiniz veya yukarıdaki butonları kullanabilirsiniz.
-"""
-    
-    await update.message.reply_text(
-        message,
-        reply_markup=reply_markup,
-        parse_mode=ParseMode.MARKDOWN
-    )
-    
-    # Dosyayı temizle
     try:
-        os.remove(file_path)
-    except:
-        pass
+        # 1. Base64 Decode
+        encrypted_bytes = base64.b64decode(data_to_decrypt)
 
-# --- Callback Query Handler ---
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Buton tıklamalarını işle"""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    
-    if data == "upload_file":
-        await query.edit_message_text(
-            "📁 Lütfen bir dosya gönderin. Desteklenen formatlar: " + 
-            ", ".join(SUPPORTED_EXTENSIONS)
-        )
-    
-    elif data == "help":
-        await help_command(update, context)
-    
-    elif data == "analyze_file":
-        if 'file_content' in context.user_data:
-            content = context.user_data['file_content']
-            filename = context.user_data.get('current_file', 'dosya')
-            
-            prompt = f"""Şu dosyayı analiz et: {filename}
+        # 2. RSA Decryption
+        rsa_key = RSA.import_key(key_pem)
+        cipher = PKCS1_v1_5.new(rsa_key)
 
-Dosya içeriği:
-{content[:4000]}
+        # Şifre çözme hatası durumunda rastgele veri döndürmek için sentinel
+        sentinel = b"DECRYPTION_FAILED"
+        decrypted_bytes = cipher.decrypt(encrypted_bytes, sentinel)
 
-Lütfen:
-1. Bu dosyanın ne olduğunu açıkla
-2. Ana fonksiyonlarını/özelliklerini listele
-3. Varsa önemli noktaları belirt
-4. Özetle"""
-            
-            await query.edit_message_text("🔍 Dosya analiz ediliyor...")
-            response = await ask_deepseek(prompt)
-            
-            await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text=f"📊 **{filename} Analizi:**\n\n{response}"
-            )
-    
-    elif data == "analyze_code":
-        if 'file_content' in context.user_data:
-            content = context.user_data['file_content']
-            filename = context.user_data.get('current_file', 'dosya')
-            
-            prompt = f"""Şu kodu analiz et: {filename}
+        if decrypted_bytes == sentinel:
+            return "❌ Döwip bolmady @ghost_fsociety yüz tutuň."
 
-Kod:
-{content[:4000]}
+        # 3. Sonucu döndür
+        return decrypted_bytes.decode('utf-8')
 
-Lütfen:
-1. Kodun ne yaptığını açıkla
-2. Potansiyel hataları kontrol et
-3. İyileştirme önerileri ver
-4. Karmaşıklık analizi yap"""
-            
-            await query.edit_message_text("🔍 Kod analiz ediliyor...")
-            response = await ask_deepseek(prompt, context.user_data.get('file_content', ''))
-            
-            await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text=f"💻 **Kod Analizi:**\n\n{response}"
-            )
-    
-    elif data == "clear_file":
-        clear_command(update, context)
-        await query.edit_message_text("✅ Dosya içeriği temizlendi!")
-    
-    elif data == "model_chat":
-        context.user_data['model'] = 'deepseek-chat'
-        await query.edit_message_text("✅ Model DeepSeek-Chat olarak ayarlandı!")
-    
-    elif data == "model_coder":
-        context.user_data['model'] = 'deepseek-coder'
-        await query.edit_message_text("✅ Model DeepSeek-Coder olarak ayarlandı!")
+    except Exception as e:
+        return f"❌ Ýalňyşlyk:\n{str(e)}"
 
-# --- Hata Handler ---
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Hataları logla"""
-    logger.error(f"Update {update} caused error {context.error}")
-
-# --- Ana Fonksiyon ---
-def main():
-    """Botu başlat"""
-    # Application oluştur
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Conversation handler (dosya yükleme için)
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler('file', file_command),
-            CommandHandler('start', start)
-        ],
-        states={
-            READING_FILE: [
-                MessageHandler(filters.Document.ALL, handle_document),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
-            ],
-            SELECTING_ACTION: [
-                CallbackQueryHandler(button_handler)
-            ]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
+# --- TELEGRAM KOMUTLARI ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply_keyboard = [['🔓 Decrypt', '🔒 Encrypt']]
+    await update.message.reply_text(
+        
+        "Encrypt etmek isleýän bolsaňyz öz ssylka(link) iberiň\n"
+        "RSA Dekrypt isleýän bolsaňyz şiferlenen happ//crypt koduny iberiň\n\n"
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True),
+        parse_mode='Markdown'
     )
-    
-    # Handlers ekle
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("clear", clear_command))
-    application.add_handler(CommandHandler("model", model_command))
-    
-    # Mesaj handlers
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    
-    # Callback query handler
-    application.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Hata handler
-    application.add_error_handler(error_handler)
-    
-    # Botu başlat
-    print("🤖 Bot başlatılıyor...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    # Klavye butonları için
+    if text == "🔓 Decrypt":
+        await update.message.reply_text("Şiferlenen `happ://crypt...` linki iberiň.")
+        return
+    elif text == "🔒 Encrypt":
+        await update.message.reply_text("Şiferlemeli ssylkany iberiň.")
+        return
+
+    # DECRYPT İŞLEMİ - happ://crypt ile başlıyorsa
+    if text.startswith(("happ://crypt/", "happ://crypt2/", "happ://crypt3/", "happ://crypt4/")):
+        status_msg = await update.message.reply_text("🔄 **Döwüp durn dosyt...**", parse_mode='Markdown')
+        result = await decrypt_link(text)
+
+        if result:
+            escaped_result = html.escape(result)
+            response_text = f"✅ **Original Link:**\n\n<code>{escaped_result}</code>"
+            await status_msg.edit_text(response_text, parse_mode='HTML')
+        else:
+            await status_msg.edit_text("❌ **Haý bläää!** Dogry ssylka iber dosyt.")
+        return
+
+    # ENCRYPT İŞLEMİ - Diğer linkler için
+    valid_prefixes = ('http://', 'https://', 'ss://', 'vless://', 'vmess://', 'trojan://')
+
+    if text.startswith(valid_prefixes):
+        status_msg = await update.message.reply_text("🔄 **Şiferläp durn dosyt...**", parse_mode='Markdown')
+        result = encrypt_link(text)
+
+        if result:
+            escaped_result = html.escape(result)
+            response_text = f"✅ **Şiferlenen Link:**\n\n<code>{escaped_result}</code>"
+            await status_msg.edit_text(response_text, parse_mode='HTML')
+        else:
+            await status_msg.edit_text("❌ **Haý bläää!** API jogap bermedi.")
+        return
+
+    # Geçersiz mesaj
+    await update.message.reply_text(
+        "❌ **Ýalňyş ýazgy dosyt!**"
+    )
+
+# --- ANA FONKSİYON ---
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    # Komutlar
+    app.add_handler(CommandHandler("start", start))
+
+    # Mesaj işleyici
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("🤖 Happ Encrypt/Decrypt Bot...")
+    app.run_polling()
 
 if __name__ == '__main__':
     main()
