@@ -1,6 +1,5 @@
 python-telegram-bot
-openai
-PyPDF2
-python-docx
-pandas
 flask
+pycryptodome
+requests
+datetime
