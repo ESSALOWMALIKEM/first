@@ -262,8 +262,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_keyboard = [['🔓 Decrypt', '🔒 Encrypt']]
     await update.message.reply_text(
         
-        "Encrypt etmek isleýän bolsaňyz öz ssylka(link) iberiň\n"
-        "RSA Dekrypt isleýän bolsaňyz şiferlenen happ//crypt koduny iberiň\n\n"
+        "Encrypt etmek isleýän bolsaňyz öz ssylka(link) iberiň\n",
+        "RSA Dekrypt isleýän bolsaňyz şiferlenen happ//crypt koduny iberiň\n\n",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True),
         parse_mode='Markdown'
     )
