@@ -11,12 +11,12 @@ from keep_alive import keep_alive
 keep_alive()
 
 # --- BOT TOKEN ---
-TOKEN = "8553766922:AAGsPE0UN_YSS1QsO1PAfPB2GddC4c4IvKs"  # İstediğiniz token'ı kullanabilirsiniz
+TOKEN = "8377323123:AAH4TDPq7YtOyz_uH8tzVSy56S6ONR1YTIA"
 
 # --- ENCRYPT API ---
 ENCRYPT_API = 'https://crypto.happ.su/api.php'
 
-# --- DECRYPTION KEYS ---
+# --- RSA PRIVATE KEYS ---
 KEY_1 = """-----BEGIN RSA PRIVATE KEY-----
 MIICXwIBAAKBgQCxsS7PUq1biQlVD92rf6eXKr9oG1/SrYx3qWahZP+Jq35m4Wb/
 Z+mB6eBWrPzJ/zZpZLWLQorcvOKt+sLaCHyH1HLNkti4jlaEQX6x97XgBm8GK08+
@@ -195,7 +195,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# --- ŞİFRELEME FONKSİYONU ---
+# --- ŞIFRELEME FONKSIÝASY ---
 def encrypt_link(original_url):
     try:
         headers = {'Content-Type': 'application/json'}
@@ -204,20 +204,19 @@ def encrypt_link(original_url):
 
         if r.status_code == 200:
             data = r.json()
+            # API jogabynda dürli açar atlary bolup biler
             encrypted = data.get('new_url') or data.get('encrypted_link') or data.get('url') or data.get('link')
-            if encrypted and encrypted.startswith('happ://'):
+            if encrypted:
                 return encrypted
     except Exception as e:
-        logging.error(f"Encrypt hatası: {e}")
+        logging.error(f"Encrypt hatasy: {e}")
     return None
 
-# --- ŞİFRE ÇÖZME FONKSİYONU ---
+# --- ŞIFRE ÇÖZME FONKSIÝASY ---
 async def decrypt_link(encrypted_text):
-    # HTML'deki prefixMap mantığı
     key_pem = None
     prefix_length = 0
 
-    # Hangi anahtarın kullanılacağını prefix'e göre seç
     if encrypted_text.startswith("happ://crypt4/"):
         key_pem = KEY_4
         prefix_length = len("happ://crypt4/")
@@ -233,7 +232,6 @@ async def decrypt_link(encrypted_text):
     else:
         return None
 
-    # Prefix'i at ve sadece şifreli veriyi al
     data_to_decrypt = encrypted_text[prefix_length:]
 
     try:
@@ -244,26 +242,22 @@ async def decrypt_link(encrypted_text):
         rsa_key = RSA.import_key(key_pem)
         cipher = PKCS1_v1_5.new(rsa_key)
 
-        # Şifre çözme hatası durumunda rastgele veri döndürmek için sentinel
         sentinel = b"DECRYPTION_FAILED"
         decrypted_bytes = cipher.decrypt(encrypted_bytes, sentinel)
 
         if decrypted_bytes == sentinel:
-            return "❌ Döwip bolmady @ghost_fsociety yüz tutuň."
+            return "❌ Şifrany çözüp bolmady. @ghost_fsociety bilen habarlaşyň."
 
-        # 3. Sonucu döndür
         return decrypted_bytes.decode('utf-8')
-
     except Exception as e:
-        return f"❌ Ýalňyşlyk:\n{str(e)}"
+        return f"❌ Ýalňyşlyk ýüze çykdy:\n{str(e)}"
 
-# --- TELEGRAM KOMUTLARI ---
+# --- TELEGRAM KOMUTLARY ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_keyboard = [['🔓 Decrypt', '🔒 Encrypt']]
     await update.message.reply_text(
-        
-        "Encrypt etmek isleýän bolsaňyz öz ssylka(link) iberiň\n",
-        "RSA Dekrypt isleýän bolsaňyz şiferlenen happ//crypt koduny iberiň\n\n",
+        "Salam! Bu bot Happ linklerini şifrälär ýa-da şifrasyny çözer.\n\n"
+        "Şifrelemek üçin adaty linki, çözmek üçin bolsa `happ://crypt...` koduny iberiň.",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True),
         parse_mode='Markdown'
     )
@@ -271,58 +265,54 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    # Klavye butonları için
+    # Klavye butonları
     if text == "🔓 Decrypt":
-        await update.message.reply_text("Şiferlenen `happ://crypt...` linki iberiň.")
+        await update.message.reply_text("Lütfen, `happ://crypt...` görnüşli şifreli linki iberiň.")
         return
     elif text == "🔒 Encrypt":
-        await update.message.reply_text("Şiferlemeli ssylkany iberiň.")
+        await update.message.reply_text("Lütfen, şifrelemek isleýän linkiňizi (http/vless/ss) iberiň.")
         return
 
-    # DECRYPT İŞLEMİ - happ://crypt ile başlıyorsa
+    # DECRYPT İŞLEMİ
     if text.startswith(("happ://crypt/", "happ://crypt2/", "happ://crypt3/", "happ://crypt4/")):
-        status_msg = await update.message.reply_text("🔄 **Döwüp durn dosyt...**", parse_mode='Markdown')
+        status_msg = await update.message.reply_text("🔄 **Şifra çözülýär, garaşyň...**", parse_mode='Markdown')
         result = await decrypt_link(text)
 
         if result:
             escaped_result = html.escape(result)
-            response_text = f"✅ **Original Link:**\n\n<code>{escaped_result}</code>"
+            response_text = f"✅ **Asyl Link:**\n\n<code>{escaped_result}</code>"
             await status_msg.edit_text(response_text, parse_mode='HTML')
         else:
-            await status_msg.edit_text("❌ **Haý bläää!** Dogry ssylka iber dosyt.")
+            await status_msg.edit_text("❌ Dogry link iberiň!")
         return
 
-    # ENCRYPT İŞLEMİ - Diğer linkler için
+    # ENCRYPT İŞLEMİ
     valid_prefixes = ('http://', 'https://', 'ss://', 'vless://', 'vmess://', 'trojan://')
-
     if text.startswith(valid_prefixes):
-        status_msg = await update.message.reply_text("🔄 **Şiferläp durn dosyt...**", parse_mode='Markdown')
+        status_msg = await update.message.reply_text("🔄 **Şifrelenýär, garaşyň...**", parse_mode='Markdown')
         result = encrypt_link(text)
 
         if result:
             escaped_result = html.escape(result)
-            response_text = f"✅ **Şiferlenen Link:**\n\n<code>{escaped_result}</code>"
+            response_text = f"✅ **Şifrelenen Link:**\n\n<code>{escaped_result}</code>"
             await status_msg.edit_text(response_text, parse_mode='HTML')
         else:
-            await status_msg.edit_text("❌ **Haý bläää!** API jogap bermedi.")
+            await status_msg.edit_text("❌ API jogap bermedi. Soňrak synanyşyň.")
         return
 
     # Geçersiz mesaj
-    await update.message.reply_text(
-        "❌ **Ýalňyş ýazgy dosyt!**"
-    )
+    await update.message.reply_text("❌ **Nätanyş format!** Lütfen dogry link ýa-da şifra iberiň.")
 
 # --- ANA FONKSİYON ---
 def main():
+    # Application döretmek
     app = Application.builder().token(TOKEN).build()
 
-    # Komutlar
+    # Handler-leri goşmak
     app.add_handler(CommandHandler("start", start))
-
-    # Mesaj işleyici
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🤖 Happ Encrypt/Decrypt Bot...")
+    print("🤖 Happ Bot işläp başlady...")
     app.run_polling()
 
 if __name__ == '__main__':
