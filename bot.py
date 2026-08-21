@@ -1,4 +1,5 @@
 import telebot
+from keep_alive import keep_alive
 
 # BotFather'dan aldığınız API token'ını buraya tırnak içinde yapıştırın
 TOKEN = "8717532319:AAETVAbBO5V1f6HogI6m_BchhPIxxaGJ1ic"
